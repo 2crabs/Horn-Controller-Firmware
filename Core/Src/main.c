@@ -34,7 +34,13 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define HORN_MODE_THREE_MINUTE 1
+#define HORN_MODE_FIVE_MINUTE 0
 
+#define RELAY_OK 0
+#define RELAY_ERR 1
+#define RELAY_TWO 1
+#define RELAY_ONE 0
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -56,8 +62,16 @@ DMA_HandleTypeDef hdma_tim2_ch2;
 osThreadId defaultTaskHandle;
 uint32_t defaultTaskBuffer[ 64 ];
 osStaticThreadDef_t defaultTaskControlBlock;
+osThreadId displayTaskHandle;
+uint32_t displayTaskBuffer[ 64 ];
+osStaticThreadDef_t displayTaskControlBlock;
 /* USER CODE BEGIN PV */
 TCA6424 ioexpander;
+uint8_t relay1Condition;
+uint8_t relay2Condition;
+//relay used to power horn(defaults to RELAY_2)
+uint8_t currentRelay;
+uint16_t adcResults[2];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -69,9 +83,10 @@ static void MX_CAN_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_TIM2_Init(void);
 void StartDefaultTask(void const * argument);
+void StartDisplayTask(void const * argument);
 
 /* USER CODE BEGIN PFP */
-
+static void Horn_Init(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -115,6 +130,7 @@ int main(void)
   /* USER CODE BEGIN 2 */
   TCA6424_Init(&ioexpander, &hi2c1, GPIOB, IO_RST_Pin);
   TCA6424_SetAsOutputs(&ioexpander);
+  Horn_Init();
   /* USER CODE END 2 */
 
   /* USER CODE BEGIN RTOS_MUTEX */
@@ -137,6 +153,10 @@ int main(void)
   /* definition and creation of defaultTask */
   osThreadStaticDef(defaultTask, StartDefaultTask, osPriorityNormal, 0, 64, defaultTaskBuffer, &defaultTaskControlBlock);
   defaultTaskHandle = osThreadCreate(osThread(defaultTask), NULL);
+
+  /* definition and creation of displayTask */
+  osThreadStaticDef(displayTask, StartDisplayTask, osPriorityNormal, 0, 64, displayTaskBuffer, &displayTaskControlBlock);
+  displayTaskHandle = osThreadCreate(osThread(displayTask), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -260,7 +280,7 @@ static void MX_ADC_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN ADC_Init 2 */
-
+  HAL_ADCEx_Calibration_Start(&hadc);
   /* USER CODE END ADC_Init 2 */
 
 }
@@ -440,8 +460,8 @@ static void MX_GPIO_Init(void)
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB, BUZZER_Pin|IO_RST_Pin|RELAY1_LED_Pin|RELAY2_LED_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pins : MODE_SWITCH_Pin RELAY_TEST_Pin CUR_FAULT_Pin START_SWITCH_Pin */
-  GPIO_InitStruct.Pin = MODE_SWITCH_Pin|RELAY_TEST_Pin|CUR_FAULT_Pin|START_SWITCH_Pin;
+  /*Configure GPIO pins : MODE_SWITCH_Pin CUR_FAULT_Pin START_SWITCH_Pin */
+  GPIO_InitStruct.Pin = MODE_SWITCH_Pin|CUR_FAULT_Pin|START_SWITCH_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
@@ -452,6 +472,12 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : RELAY_TEST_Pin */
+  GPIO_InitStruct.Pin = RELAY_TEST_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(RELAY_TEST_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pin : HORN_SWITCH_Pin */
   GPIO_InitStruct.Pin = HORN_SWITCH_Pin;
@@ -471,7 +497,49 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+static void Horn_Init(void){
+  //Test Relay 1
+  //Attempt to close relay
+  HAL_GPIO_WritePin(GPIOA, RELAY1_Pin, GPIO_PIN_SET);
+  uint32_t startTime = HAL_GetTick();
+  //Wait until time limit has expired or relay has closed
+  while((HAL_GPIO_ReadPin(GPIOA, RELAY_TEST_Pin) == GPIO_PIN_SET) && ((HAL_GetTick()-startTime) < 30)){
+    //do nothing
+  }
 
+  if (HAL_GPIO_ReadPin(GPIOA, RELAY_TEST_Pin) == GPIO_PIN_RESET){
+    relay1Condition = RELAY_OK;
+    HAL_GPIO_WritePin(GPIOB, RELAY1_LED_Pin, GPIO_PIN_SET);
+  } else{
+    relay1Condition = RELAY_ERR;
+  }
+  HAL_GPIO_WritePin(GPIOA, RELAY1_Pin, GPIO_PIN_RESET);
+
+
+  //Test Relay 2
+  HAL_GPIO_WritePin(GPIOA, RELAY2_Pin, GPIO_PIN_SET);
+  startTime = HAL_GetTick();
+  //Wait until time limit has expired or relay has closed
+  while((HAL_GPIO_ReadPin(GPIOA, RELAY_TEST_Pin) == GPIO_PIN_SET) && ((HAL_GetTick()-startTime) < 30)){
+    //do nothing
+  }
+
+  if (HAL_GPIO_ReadPin(GPIOA, RELAY_TEST_Pin) == GPIO_PIN_RESET){
+    relay2Condition = RELAY_OK;
+    HAL_GPIO_WritePin(GPIOB, RELAY2_LED_Pin, GPIO_PIN_SET);
+  } else{
+    relay2Condition = RELAY_ERR;
+  }
+  HAL_GPIO_WritePin(GPIOA, RELAY2_Pin, GPIO_PIN_RESET);
+
+
+  //Check Battery voltage
+  while(1){
+    HAL_ADC_Start_DMA(&hadc, adcResults, 2);
+    Display_SetValue(&ioexpander, (uint16_t)((float)adcResults[1])/(23.6f), DISPLAY_MODE_ALL);
+    HAL_Delay(20);
+  }
+}
 /* USER CODE END 4 */
 
 /* USER CODE BEGIN Header_StartDefaultTask */
@@ -487,9 +555,30 @@ void StartDefaultTask(void const * argument)
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+   osDelay(1);
   }
   /* USER CODE END 5 */
+}
+
+/* USER CODE BEGIN Header_StartDisplayTask */
+/**
+* @brief Function implementing the displayTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartDisplayTask */
+void StartDisplayTask(void const * argument)
+{
+  /* USER CODE BEGIN StartDisplayTask */
+  /* Infinite loop */
+  static uint8_t i =0;
+  for(;;)
+  {
+    Display_SetValue(&ioexpander, i, DISPLAY_MODE_ALL);
+    vTaskDelay(50);
+    i++;
+  }
+  /* USER CODE END StartDisplayTask */
 }
 
 /**
