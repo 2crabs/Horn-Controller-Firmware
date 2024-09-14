@@ -67,6 +67,7 @@ uint32_t displayTaskBuffer[ 64 ];
 osStaticThreadDef_t displayTaskControlBlock;
 /* USER CODE BEGIN PV */
 TCA6424 ioexpander;
+WS2812 rgbLeds;
 uint8_t relay1Condition;
 uint8_t relay2Condition;
 //relay used to power horn(defaults to RELAY_2)
@@ -128,6 +129,7 @@ int main(void)
   MX_I2C1_Init();
   MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
+  WS2812_Init(&rgbLeds, &htim2, TIM_CHANNEL_2);
   TCA6424_Init(&ioexpander, &hi2c1, GPIOB, IO_RST_Pin);
   TCA6424_SetAsOutputs(&ioexpander);
   Horn_Init();
@@ -317,7 +319,20 @@ static void MX_CAN_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN CAN_Init 2 */
+  if (HAL_CAN_Start(&hcan) != HAL_OK)
+  {
+    Error_Handler();
+  }
 
+  CAN_FilterTypeDef filter;
+  filter.FilterBank = 0;
+  filter.FilterMode = CAN_FILTERMODE_IDMASK;
+  filter.FilterScale = CAN_FILTERSCALE_32BIT;
+  filter.FilterMaskIdHigh = 0x0;
+  filter.FilterMaskIdLow = 0x0;
+  filter.FilterFIFOAssignment = CAN_RX_FIFO0;
+  filter.FilterActivation = ENABLE;
+  HAL_CAN_ConfigFilter(&hcan, &filter);
   /* USER CODE END CAN_Init 2 */
 
 }
