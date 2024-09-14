@@ -41,6 +41,10 @@
 #define RELAY_ERR 1
 #define RELAY_TWO 1
 #define RELAY_ONE 0
+
+#define RGB_BAT 0
+#define RGB_REMOTE 1
+#define RGB_MODE 2
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -65,14 +69,29 @@ osStaticThreadDef_t defaultTaskControlBlock;
 osThreadId displayTaskHandle;
 uint32_t displayTaskBuffer[ 64 ];
 osStaticThreadDef_t displayTaskControlBlock;
+osThreadId rgbTaskHandle;
+uint32_t rgbTaskBuffer[ 64 ];
+osStaticThreadDef_t rgbTaskControlBlock;
+osThreadId hornTaskHandle;
+uint32_t HornTaskBuffer[ 64 ];
+osStaticThreadDef_t HornTaskControlBlock;
+osMessageQId rgbQueueHandle;
+uint8_t rgbQueueBuffer[ 4 * 4 ];
+osStaticMessageQDef_t rgbQueueControlBlock;
 /* USER CODE BEGIN PV */
 TCA6424 ioexpander;
 WS2812 rgbLeds;
+static uint8_t rgbBuffer[WS2812_BUF_LEN];
 uint8_t relay1Condition;
 uint8_t relay2Condition;
 //relay used to power horn(defaults to RELAY_2)
 uint8_t currentRelay;
-uint16_t adcResults[2];
+uint32_t adcResults[2];
+
+static uint32_t hornSequence_Five[1] = {23};
+static uint32_t hornLengths_Five[1];
+uint32_t timerStartTick;
+uint32_t isRunning = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -85,14 +104,23 @@ static void MX_I2C1_Init(void);
 static void MX_TIM2_Init(void);
 void StartDefaultTask(void const * argument);
 void StartDisplayTask(void const * argument);
+void StartRgbTask(void const * argument);
+void StartHornTask(void const * argument);
 
 /* USER CODE BEGIN PFP */
 static void Horn_Init(void);
+static uint32_t CalculatePercentage(uint32_t adcReading);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+void HAL_TIM_PWM_PulseFinishedCallback(TIM_HandleTypeDef *htim){
+  WS2812_StopDMA(&rgbLeds);
+}
 
+void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan){
+
+}
 /* USER CODE END 0 */
 
 /**
@@ -129,9 +157,16 @@ int main(void)
   MX_I2C1_Init();
   MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
+  WS2812_Reset_Buf(rgbBuffer);
+  WS2812_Write_Buf(rgbBuffer, 30, 30, 0, RGB_BAT);
+  WS2812_Write_Buf(rgbBuffer, 30, 0, 0, RGB_REMOTE);
+  WS2812_Write_Buf(rgbBuffer, 0, 0, 30, RGB_MODE);
   WS2812_Init(&rgbLeds, &htim2, TIM_CHANNEL_2);
+  WS2812_Send(&rgbLeds, rgbBuffer);
   TCA6424_Init(&ioexpander, &hi2c1, GPIOB, IO_RST_Pin);
   TCA6424_SetAsOutputs(&ioexpander);
+  //Display nothing
+  Display_SetValue(&ioexpander, 1, 0);
   Horn_Init();
   /* USER CODE END 2 */
 
@@ -147,6 +182,11 @@ int main(void)
   /* start timers, add new ones, ... */
   /* USER CODE END RTOS_TIMERS */
 
+  /* Create the queue(s) */
+  /* definition and creation of rgbQueue */
+  osMessageQStaticDef(rgbQueue, 4, 4, rgbQueueBuffer, &rgbQueueControlBlock);
+  rgbQueueHandle = osMessageCreate(osMessageQ(rgbQueue), NULL);
+
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
   /* USER CODE END RTOS_QUEUES */
@@ -159,6 +199,14 @@ int main(void)
   /* definition and creation of displayTask */
   osThreadStaticDef(displayTask, StartDisplayTask, osPriorityNormal, 0, 64, displayTaskBuffer, &displayTaskControlBlock);
   displayTaskHandle = osThreadCreate(osThread(displayTask), NULL);
+
+  /* definition and creation of rgbTask */
+  osThreadStaticDef(rgbTask, StartRgbTask, osPriorityLow, 0, 64, rgbTaskBuffer, &rgbTaskControlBlock);
+  rgbTaskHandle = osThreadCreate(osThread(rgbTask), NULL);
+
+  /* definition and creation of hornTask */
+  osThreadStaticDef(hornTask, StartHornTask, osPriorityIdle, 0, 64, HornTaskBuffer, &HornTaskControlBlock);
+  hornTaskHandle = osThreadCreate(osThread(hornTask), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -547,15 +595,25 @@ static void Horn_Init(void){
   }
   HAL_GPIO_WritePin(GPIOA, RELAY2_Pin, GPIO_PIN_RESET);
 
-
-  //Check Battery voltage
-  while(1){
-    HAL_ADC_Start_DMA(&hadc, adcResults, 2);
-    if ((((float)adcResults[1])*0.3363f - 923.0f)>0.0f){
-      Display_SetValue(&ioexpander, (uint16_t)(((float)adcResults[1])*0.3363f - 923.0f), DISPLAY_MODE_ALL);
-    }
-    HAL_Delay(500);
+  //only use relay 1 if 2 is not working
+  if (relay2Condition == RELAY_OK){
+    currentRelay = RELAY_TWO;
+  } else {
+    currentRelay = RELAY_ONE;
   }
+
+  HAL_Delay(40);
+}
+
+static uint32_t CalculatePercentage(uint32_t adcReading){
+  int32_t percentage = (adcReading*3363)/10000 - 923;
+  if (percentage<0){
+    return 0;
+  }
+  else if (percentage>100){
+    return 100;
+  }
+  return (uint32_t)percentage;
 }
 /* USER CODE END 4 */
 
@@ -588,14 +646,72 @@ void StartDisplayTask(void const * argument)
 {
   /* USER CODE BEGIN StartDisplayTask */
   /* Infinite loop */
-  static uint8_t i =0;
+  static uint8_t i = 0;
+  uint32_t taskStartTick = (uint32_t)xTaskGetTickCount();
+
+  //show voltage for 5 seconds
+  while(((uint32_t)xTaskGetTickCount() - taskStartTick) < 5000){
+    HAL_ADC_Start_DMA(&hadc, adcResults, 2);
+    vTaskDelay(10);
+    uint16_t percentage = CalculatePercentage(adcResults[1]);
+    Display_SetValue(&ioexpander, (uint16_t)percentage, DISPLAY_MODE_ALL);
+    vTaskDelay(250);
+  }
+
+  uint8_t canDataTimer[2];
+  CAN_TxHeaderTypeDef CANHeader;
+  CANHeader.StdId = 0xAA;
+  CANHeader.DLC = 0x02;
+  CANHeader.IDE = CAN_ID_STD;
+  CANHeader.RTR = CAN_RTR_DATA;
+
   for(;;)
   {
+    //approx 0.15ms
     Display_SetValue(&ioexpander, i, DISPLAY_MODE_ALL);
-    vTaskDelay(50);
+    HAL_CAN_AddTxMessage(&hcan, &CANHeader, canDataTimer, CAN_TX_MAILBOX0);
+    vTaskDelay(10);
     i++;
   }
   /* USER CODE END StartDisplayTask */
+}
+
+/* USER CODE BEGIN Header_StartRgbTask */
+/**
+* @brief Function implementing the rgbTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartRgbTask */
+void StartRgbTask(void const * argument)
+{
+  /* USER CODE BEGIN StartRgbTask */
+  uint8_t receievedData[4];
+  /* Infinite loop */
+  for(;;)
+  {
+    xQueueReceive(rgbQueueHandle, receievedData, portMAX_DELAY);
+    vTaskDelay(5);
+  }
+  /* USER CODE END StartRgbTask */
+}
+
+/* USER CODE BEGIN Header_StartHornTask */
+/**
+* @brief Function implementing the hornTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartHornTask */
+void StartHornTask(void const * argument)
+{
+  /* USER CODE BEGIN StartHornTask */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END StartHornTask */
 }
 
 /**

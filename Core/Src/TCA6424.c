@@ -16,10 +16,12 @@ HAL_StatusTypeDef TCA6424_Init(TCA6424 *dev, I2C_HandleTypeDef *i2c, GPIO_TypeDe
 	return HAL_I2C_Mem_Write(dev->i2cHandle, TCA6424_I2C_ADDR, TCA6424_REG_CONFIG0, I2C_MEMADD_SIZE_8BIT, &dummyReg, 1, 100);
 }
 
+//blocking function
 HAL_StatusTypeDef TCA6424_WriteRegister(TCA6424 *dev, uint8_t reg, uint8_t *data){
 	return HAL_I2C_Mem_Write(dev->i2cHandle, TCA6424_I2C_ADDR, reg, I2C_MEMADD_SIZE_8BIT, data, 1, 100);
 }
 
+// i2c using interrupts
 HAL_StatusTypeDef TCA6424_WriteRegisters(TCA6424 *dev, uint8_t reg, uint8_t *data, uint8_t size){
 	return HAL_I2C_Mem_Write(dev->i2cHandle, TCA6424_I2C_ADDR, reg, I2C_MEMADD_SIZE_8BIT, data, size, 100);
 }
