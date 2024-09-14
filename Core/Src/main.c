@@ -536,8 +536,10 @@ static void Horn_Init(void){
   //Check Battery voltage
   while(1){
     HAL_ADC_Start_DMA(&hadc, adcResults, 2);
-    Display_SetValue(&ioexpander, (uint16_t)((float)adcResults[1])/(23.6f), DISPLAY_MODE_ALL);
-    HAL_Delay(20);
+    if ((((float)adcResults[1])*0.3363f - 923.0f)>0.0f){
+      Display_SetValue(&ioexpander, (uint16_t)(((float)adcResults[1])*0.3363f - 923.0f), DISPLAY_MODE_ALL);
+    }
+    HAL_Delay(500);
   }
 }
 /* USER CODE END 4 */
