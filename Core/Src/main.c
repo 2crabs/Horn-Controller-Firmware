@@ -45,6 +45,9 @@
 #define RGB_BAT 0
 #define RGB_REMOTE 1
 #define RGB_MODE 2
+
+#define ADC_CUR 0
+#define ADC_BAT 1
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -83,12 +86,15 @@ uint8_t rgbQueueBuffer[ 4 * 4 ];
 osStaticMessageQDef_t rgbQueueControlBlock;
 /* USER CODE BEGIN PV */
 TCA6424 ioexpander;
+
 WS2812 rgbLeds;
 static uint8_t rgbBuffer[WS2812_BUF_LEN];
+
 uint8_t relay1Condition;
 uint8_t relay2Condition;
 //relay used to power horn(defaults to RELAY_2)
 uint8_t currentRelay;
+
 uint32_t adcResults[2];
 
 static TickType_t hornSequence_Five[3] = {2000,15000,20000};
@@ -113,8 +119,9 @@ void StartCANReceiveTask(void const * argument);
 
 /* USER CODE BEGIN PFP */
 static void Horn_Init(void);
-static uint32_t CalculatePercentage(uint32_t adcReading);
+static uint16_t CalculatePercentage(uint32_t adcReading);
 static void setRelay(GPIO_PinState state);
+static uint8_t TestRelay(uint16_t relayPin, uint16_t ledPin, uint16_t timeout);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -168,8 +175,10 @@ int main(void)
   WS2812_Write_Buf(rgbBuffer, 0, 0, 30, RGB_MODE);
   WS2812_Init(&rgbLeds, &htim2, TIM_CHANNEL_2);
   WS2812_Send(&rgbLeds, rgbBuffer);
+
   TCA6424_Init(&ioexpander, &hi2c1, GPIOB, IO_RST_Pin);
   TCA6424_SetAsOutputs(&ioexpander);
+
   //Display nothing
   Display_SetValue(&ioexpander, 1, 0);
   Horn_Init();
@@ -569,51 +578,37 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 static void Horn_Init(void){
-  //Test Relay 1
-  //Attempt to close relay
-  HAL_GPIO_WritePin(GPIOA, RELAY1_Pin, GPIO_PIN_SET);
-  uint32_t startTime = HAL_GetTick();
-  //Wait until time limit has expired or relay has closed
-  while((HAL_GPIO_ReadPin(GPIOA, RELAY_TEST_Pin) == GPIO_PIN_SET) && ((HAL_GetTick()-startTime) < 30)){
-    //do nothing
-  }
-
-  if (HAL_GPIO_ReadPin(GPIOA, RELAY_TEST_Pin) == GPIO_PIN_RESET){
-    relay1Condition = RELAY_OK;
-    HAL_GPIO_WritePin(GPIOB, RELAY1_LED_Pin, GPIO_PIN_SET);
-  } else{
-    relay1Condition = RELAY_ERR;
-  }
-  HAL_GPIO_WritePin(GPIOA, RELAY1_Pin, GPIO_PIN_RESET);
-
-
-  //Test Relay 2
-  HAL_GPIO_WritePin(GPIOA, RELAY2_Pin, GPIO_PIN_SET);
-  startTime = HAL_GetTick();
-  //Wait until time limit has expired or relay has closed
-  while((HAL_GPIO_ReadPin(GPIOA, RELAY_TEST_Pin) == GPIO_PIN_SET) && ((HAL_GetTick()-startTime) < 30)){
-    //do nothing
-  }
-
-  if (HAL_GPIO_ReadPin(GPIOA, RELAY_TEST_Pin) == GPIO_PIN_RESET){
-    relay2Condition = RELAY_OK;
-    HAL_GPIO_WritePin(GPIOB, RELAY2_LED_Pin, GPIO_PIN_SET);
-  } else{
-    relay2Condition = RELAY_ERR;
-  }
-  HAL_GPIO_WritePin(GPIOA, RELAY2_Pin, GPIO_PIN_RESET);
+  relay1Condition = TestRelay(RELAY1_Pin, RELAY1_LED_Pin, 30);
+  relay2Condition = TestRelay(RELAY2_Pin, RELAY2_LED_Pin, 30);
 
   //only use relay 1 if 2 is not working
+  currentRelay = RELAY_ONE;
   if (relay2Condition == RELAY_OK){
     currentRelay = RELAY_TWO;
-  } else {
-    currentRelay = RELAY_ONE;
   }
 
   HAL_Delay(40);
 }
 
-static uint32_t CalculatePercentage(uint32_t adcReading){
+static uint8_t TestRelay(uint16_t relayPin, uint16_t ledPin, uint16_t timeout){
+  uint8_t condition = RELAY_ERR;
+  uint32_t startTime = HAL_GetTick();
+
+  HAL_GPIO_WritePin(GPIOA, relayPin, GPIO_PIN_SET);
+  //Wait until time limit has expired or relay has closed
+  while((HAL_GPIO_ReadPin(GPIOA, RELAY_TEST_Pin) == GPIO_PIN_SET) && ((HAL_GetTick()-startTime) < timeout)){
+    //do nothing
+  }
+
+  if (HAL_GPIO_ReadPin(GPIOA, RELAY_TEST_Pin) == GPIO_PIN_RESET){
+    HAL_GPIO_WritePin(GPIOB, ledPin, GPIO_PIN_SET);
+    condition = RELAY_OK;
+  }
+  HAL_GPIO_WritePin(GPIOA, relayPin, GPIO_PIN_RESET);
+  return condition;
+}
+
+static uint16_t CalculatePercentage(uint32_t adcReading){
   int32_t percentage = (adcReading*3363)/10000 - 923;
   if (percentage<0){
     return 0;
@@ -621,7 +616,7 @@ static uint32_t CalculatePercentage(uint32_t adcReading){
   else if (percentage>100){
     return 100;
   }
-  return (uint32_t)percentage;
+  return (uint16_t)percentage;
 }
 
 static void setRelay(GPIO_PinState state){
@@ -663,10 +658,10 @@ void StartDisplayTask(void const * argument)
   /* USER CODE BEGIN StartDisplayTask */
   /* Infinite loop */
   static uint8_t i = 0;
-  uint32_t taskStartTick = (uint32_t)xTaskGetTickCount();
+  TickType_t taskStartTick = xTaskGetTickCount();
 
   //show voltage for 5 seconds
-  while(((uint32_t)xTaskGetTickCount() - taskStartTick) < 5000){
+  while((xTaskGetTickCount() - taskStartTick) < 5000){
     HAL_ADC_Start_DMA(&hadc, adcResults, 2);
     vTaskDelay(10);
     uint16_t percentage = CalculatePercentage(adcResults[1]);
@@ -675,7 +670,7 @@ void StartDisplayTask(void const * argument)
   }
 //
   uint32_t mailbox;
-  uint8_t canDataTimer[2];
+  static uint8_t timerCanData[2];
   static CAN_TxHeaderTypeDef CANHeader;
   CANHeader.StdId = 0xAA;
   CANHeader.DLC = 0x02;
@@ -686,7 +681,7 @@ void StartDisplayTask(void const * argument)
   {
     //approx 0.15ms
     Display_SetValue(&ioexpander, i, DISPLAY_MODE_ALL);
-    HAL_CAN_AddTxMessage(&hcan, &CANHeader, canDataTimer, &mailbox);
+    HAL_CAN_AddTxMessage(&hcan, &CANHeader, timerCanData, &mailbox);
     vTaskDelay(10);
     i++;
   }
@@ -727,7 +722,7 @@ void StartHornTask(void const * argument)
   /* USER CODE BEGIN StartHornTask */
   /* Infinite loop */
   TickType_t startTime = xTaskGetTickCount();
-  uint32_t i = 0;
+  uint8_t i = 0;
   for(;;)
   {
     TickType_t delayAmount = hornSequence_Five[i]+startTime-xTaskGetTickCount();
