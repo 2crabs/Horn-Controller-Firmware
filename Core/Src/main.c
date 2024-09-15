@@ -48,6 +48,14 @@
 
 #define ADC_CUR 0
 #define ADC_BAT 1
+
+#define CAN_REMOTE_ID ((0xBB)<<3)
+#define CAN_MSG_START 0b010
+#define CAN_MSG_HORN 0b011
+#define CAN_MSG_PERIODIC 0b000
+
+#define RUNNING 1
+#define STOPPED 0
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -97,10 +105,11 @@ uint8_t currentRelay;
 
 uint32_t adcResults[2];
 
-static TickType_t hornSequence_Five[3] = {2000,15000,20000};
-static TickType_t hornLengths_Five[3] = {500, 100, 1000};
-uint32_t timerStartTick;
-uint32_t isRunning = 0;
+static TickType_t hornSequence_Five[4] = {10000, 30000, 31000, 60000};
+static TickType_t hornLengths_Five[4] = {500, 500, 500, 1000};
+static TickType_t sequenceLength_Five = 360000;
+TickType_t timerStartTick;
+uint8_t isRunning = STOPPED;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -131,7 +140,10 @@ void HAL_TIM_PWM_PulseFinishedCallback(TIM_HandleTypeDef *htim){
 }
 
 void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan){
-  //xTaskNotifyFromISR(CANReceiveTaskHandle, 0, 0, 0);
+  BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+
+  vTaskNotifyGiveFromISR(CANReceiveTaskHandle, &xHigherPriorityTaskWoken);
+  portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 }
 /* USER CODE END 0 */
 
@@ -170,9 +182,9 @@ int main(void)
   MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
   WS2812_Reset_Buf(rgbBuffer);
-  WS2812_Write_Buf(rgbBuffer, 30, 30, 0, RGB_BAT);
-  WS2812_Write_Buf(rgbBuffer, 30, 0, 0, RGB_REMOTE);
-  WS2812_Write_Buf(rgbBuffer, 0, 0, 30, RGB_MODE);
+  WS2812_Write_Buf(rgbBuffer, 10, 10, 0, RGB_BAT);
+  WS2812_Write_Buf(rgbBuffer, 10, 0, 0, RGB_REMOTE);
+  WS2812_Write_Buf(rgbBuffer, 0, 0, 10, RGB_MODE);
   WS2812_Init(&rgbLeds, &htim2, TIM_CHANNEL_2);
   WS2812_Send(&rgbLeds, rgbBuffer);
 
@@ -579,6 +591,7 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 static void Horn_Init(void){
   relay1Condition = TestRelay(RELAY1_Pin, RELAY1_LED_Pin, 30);
+  HAL_Delay(50);
   relay2Condition = TestRelay(RELAY2_Pin, RELAY2_LED_Pin, 30);
 
   //only use relay 1 if 2 is not working
@@ -616,6 +629,7 @@ static uint16_t CalculatePercentage(uint32_t adcReading){
   else if (percentage>100){
     return 100;
   }
+
   return (uint16_t)percentage;
 }
 
@@ -641,7 +655,7 @@ void StartDefaultTask(void const * argument)
   /* Infinite loop */
   for(;;)
   {
-   osDelay(1);
+   vTaskDelay(1);
   }
   /* USER CODE END 5 */
 }
@@ -665,10 +679,11 @@ void StartDisplayTask(void const * argument)
     HAL_ADC_Start_DMA(&hadc, adcResults, 2);
     vTaskDelay(10);
     uint16_t percentage = CalculatePercentage(adcResults[1]);
-    Display_SetValue(&ioexpander, (uint16_t)percentage, DISPLAY_MODE_ALL);
+    Display_SetValue(&ioexpander, percentage, DISPLAY_MODE_ALL);
     vTaskDelay(250);
   }
-//
+  isRunning = RUNNING;
+  timerStartTick = xTaskGetTickCount();
   uint32_t mailbox;
   static uint8_t timerCanData[2];
   static CAN_TxHeaderTypeDef CANHeader;
@@ -680,7 +695,10 @@ void StartDisplayTask(void const * argument)
   for(;;)
   {
     //approx 0.15ms
-    Display_SetValue(&ioexpander, i, DISPLAY_MODE_ALL);
+    uint32_t secondsToZero = ((sequenceLength_Five+timerStartTick-xTaskGetTickCount())/1000)+1;
+    uint8_t minutes = secondsToZero/60;
+    uint8_t seconds = secondsToZero%60;
+    Display_SetMinSec(&ioexpander, minutes, seconds);
     HAL_CAN_AddTxMessage(&hcan, &CANHeader, timerCanData, &mailbox);
     vTaskDelay(10);
     i++;
@@ -721,18 +739,22 @@ void StartHornTask(void const * argument)
 {
   /* USER CODE BEGIN StartHornTask */
   /* Infinite loop */
-  TickType_t startTime = xTaskGetTickCount();
-  uint8_t i = 0;
+  uint8_t hornNum = 0;
   for(;;)
   {
-    TickType_t delayAmount = hornSequence_Five[i]+startTime-xTaskGetTickCount();
-    vTaskDelay(delayAmount);
-    setRelay(GPIO_PIN_SET);
-    vTaskDelay(hornLengths_Five[i]);
-    setRelay(GPIO_PIN_RESET);
-    i++;
-    if(i == 3){
-      vTaskDelay(portMAX_DELAY);
+    if(isRunning == RUNNING){
+      TickType_t delayAmount = hornSequence_Five[hornNum]+timerStartTick-xTaskGetTickCount();
+      vTaskDelay(delayAmount);
+      setRelay(GPIO_PIN_SET);
+      vTaskDelay(hornLengths_Five[hornNum]);
+      setRelay(GPIO_PIN_RESET);
+      hornNum++;
+      if (hornNum == (sizeof(hornLengths_Five)/4)){
+        isRunning = STOPPED;
+      }
+    } else{
+      timerStartTick = xTaskGetTickCount();
+      vTaskDelay(10);
     }
   }
   /* USER CODE END StartHornTask */
@@ -749,9 +771,24 @@ void StartCANReceiveTask(void const * argument)
 {
   /* USER CODE BEGIN StartCANReceiveTask */
   /* Infinite loop */
+  static uint8_t red[4] = {10,0,0,RGB_REMOTE};
+  static uint8_t green[4] = {0,10,0,RGB_REMOTE};
+  static CAN_RxHeaderTypeDef canHeader;
+  static uint8_t canData[8];
+
   for(;;)
   {
-    osDelay(1);
+    if (ulTaskNotifyTake(pdTRUE, 500) == pdFALSE){
+      xQueueSendToBack(rgbQueueHandle, red, 0);
+    } else {
+      xQueueSendToBack(rgbQueueHandle, green, 0);
+      HAL_CAN_GetRxMessage(&hcan, CAN_RX_FIFO0, &canHeader, canData);
+
+      if (canHeader.StdId == (CAN_REMOTE_ID | CAN_MSG_START)){
+        isRunning = RUNNING;
+      }
+    }
+
   }
   /* USER CODE END StartCANReceiveTask */
 }
