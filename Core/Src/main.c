@@ -75,6 +75,9 @@ osStaticThreadDef_t rgbTaskControlBlock;
 osThreadId hornTaskHandle;
 uint32_t HornTaskBuffer[ 64 ];
 osStaticThreadDef_t HornTaskControlBlock;
+osThreadId CANReceiveTaskHandle;
+uint32_t CANReceiveTaskBuffer[ 64 ];
+osStaticThreadDef_t CANReceiveTaskControlBlock;
 osMessageQId rgbQueueHandle;
 uint8_t rgbQueueBuffer[ 4 * 4 ];
 osStaticMessageQDef_t rgbQueueControlBlock;
@@ -88,8 +91,8 @@ uint8_t relay2Condition;
 uint8_t currentRelay;
 uint32_t adcResults[2];
 
-static uint32_t hornSequence_Five[1] = {23};
-static uint32_t hornLengths_Five[1];
+static TickType_t hornSequence_Five[3] = {2000,15000,20000};
+static TickType_t hornLengths_Five[3] = {500, 100, 1000};
 uint32_t timerStartTick;
 uint32_t isRunning = 0;
 /* USER CODE END PV */
@@ -106,10 +109,12 @@ void StartDefaultTask(void const * argument);
 void StartDisplayTask(void const * argument);
 void StartRgbTask(void const * argument);
 void StartHornTask(void const * argument);
+void StartCANReceiveTask(void const * argument);
 
 /* USER CODE BEGIN PFP */
 static void Horn_Init(void);
 static uint32_t CalculatePercentage(uint32_t adcReading);
+static void setRelay(GPIO_PinState state);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -119,7 +124,7 @@ void HAL_TIM_PWM_PulseFinishedCallback(TIM_HandleTypeDef *htim){
 }
 
 void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan){
-
+  //xTaskNotifyFromISR(CANReceiveTaskHandle, 0, 0, 0);
 }
 /* USER CODE END 0 */
 
@@ -208,6 +213,10 @@ int main(void)
   osThreadStaticDef(hornTask, StartHornTask, osPriorityIdle, 0, 64, HornTaskBuffer, &HornTaskControlBlock);
   hornTaskHandle = osThreadCreate(osThread(hornTask), NULL);
 
+  /* definition and creation of CANReceiveTask */
+  osThreadStaticDef(CANReceiveTask, StartCANReceiveTask, osPriorityIdle, 0, 64, CANReceiveTaskBuffer, &CANReceiveTaskControlBlock);
+  CANReceiveTaskHandle = osThreadCreate(osThread(CANReceiveTask), NULL);
+
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
   /* USER CODE END RTOS_THREADS */
@@ -221,7 +230,6 @@ int main(void)
   while (1)
   {
     /* USER CODE END WHILE */
-
     /* USER CODE BEGIN 3 */
   }
   /* USER CODE END 3 */
@@ -615,6 +623,14 @@ static uint32_t CalculatePercentage(uint32_t adcReading){
   }
   return (uint32_t)percentage;
 }
+
+static void setRelay(GPIO_PinState state){
+  if (currentRelay == RELAY_ONE){
+    HAL_GPIO_WritePin(GPIOA, RELAY1_Pin, state);
+  } else {
+    HAL_GPIO_WritePin(GPIOA, RELAY2_Pin, state);
+  }
+}
 /* USER CODE END 4 */
 
 /* USER CODE BEGIN Header_StartDefaultTask */
@@ -657,9 +673,10 @@ void StartDisplayTask(void const * argument)
     Display_SetValue(&ioexpander, (uint16_t)percentage, DISPLAY_MODE_ALL);
     vTaskDelay(250);
   }
-
+//
+  uint32_t mailbox;
   uint8_t canDataTimer[2];
-  CAN_TxHeaderTypeDef CANHeader;
+  static CAN_TxHeaderTypeDef CANHeader;
   CANHeader.StdId = 0xAA;
   CANHeader.DLC = 0x02;
   CANHeader.IDE = CAN_ID_STD;
@@ -669,7 +686,7 @@ void StartDisplayTask(void const * argument)
   {
     //approx 0.15ms
     Display_SetValue(&ioexpander, i, DISPLAY_MODE_ALL);
-    HAL_CAN_AddTxMessage(&hcan, &CANHeader, canDataTimer, CAN_TX_MAILBOX0);
+    HAL_CAN_AddTxMessage(&hcan, &CANHeader, canDataTimer, &mailbox);
     vTaskDelay(10);
     i++;
   }
@@ -691,6 +708,8 @@ void StartRgbTask(void const * argument)
   for(;;)
   {
     xQueueReceive(rgbQueueHandle, receievedData, portMAX_DELAY);
+    WS2812_Write_Buf(rgbBuffer, receievedData[0], receievedData[1], receievedData[2], receievedData[3]);
+    WS2812_Send(&rgbLeds, rgbBuffer);
     vTaskDelay(5);
   }
   /* USER CODE END StartRgbTask */
@@ -707,11 +726,39 @@ void StartHornTask(void const * argument)
 {
   /* USER CODE BEGIN StartHornTask */
   /* Infinite loop */
+  TickType_t startTime = xTaskGetTickCount();
+  uint32_t i = 0;
+  for(;;)
+  {
+    TickType_t delayAmount = hornSequence_Five[i]+startTime-xTaskGetTickCount();
+    vTaskDelay(delayAmount);
+    setRelay(GPIO_PIN_SET);
+    vTaskDelay(hornLengths_Five[i]);
+    setRelay(GPIO_PIN_RESET);
+    i++;
+    if(i == 3){
+      vTaskDelay(portMAX_DELAY);
+    }
+  }
+  /* USER CODE END StartHornTask */
+}
+
+/* USER CODE BEGIN Header_StartCANReceiveTask */
+/**
+* @brief Function implementing the CANReceiveTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartCANReceiveTask */
+void StartCANReceiveTask(void const * argument)
+{
+  /* USER CODE BEGIN StartCANReceiveTask */
+  /* Infinite loop */
   for(;;)
   {
     osDelay(1);
   }
-  /* USER CODE END StartHornTask */
+  /* USER CODE END StartCANReceiveTask */
 }
 
 /**
