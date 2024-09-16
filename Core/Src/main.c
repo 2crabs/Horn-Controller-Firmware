@@ -105,9 +105,15 @@ uint8_t currentRelay;
 
 uint32_t adcResults[2];
 
-static TickType_t hornSequence_Five[4] = {10000, 30000, 31000, 60000};
-static TickType_t hornLengths_Five[4] = {500, 500, 500, 1000};
+static TickType_t hornSequence_Five[4] = {60000, 120000, 300000, 360000};
+static TickType_t hornLengths_Five[4] = {1000, 1000, 1000, 1000};
 static TickType_t sequenceLength_Five = 360000;
+
+static TickType_t hornSequence_Three[1] = {10000};
+static TickType_t hornLengths_Three[1] = {500};
+static TickType_t sequenceLength_Three = 180000;
+static uint8_t hornNum = 0;
+
 TickType_t timerStartTick;
 uint8_t isRunning = STOPPED;
 /* USER CODE END PV */
@@ -694,11 +700,21 @@ void StartDisplayTask(void const * argument)
 
   for(;;)
   {
-    //approx 0.15ms
-    uint32_t secondsToZero = ((sequenceLength_Five+timerStartTick-xTaskGetTickCount())/1000)+1;
+    if(!isRunning){
+      timerStartTick = xTaskGetTickCount();
+      hornNum = 0;
+    }
+    if((sequenceLength_Five+1000+timerStartTick) < xTaskGetTickCount()){
+      timerStartTick = xTaskGetTickCount() - 61000;
+      hornNum = 1;
+    }
+    uint32_t secondsToZero = ((sequenceLength_Five+1000)+timerStartTick-xTaskGetTickCount())/1000;
     uint8_t minutes = secondsToZero/60;
     uint8_t seconds = secondsToZero%60;
+    //approx 0.15ms
     Display_SetMinSec(&ioexpander, minutes, seconds);
+    timerCanData[0] = minutes;
+    timerCanData[1] = seconds;
     HAL_CAN_AddTxMessage(&hcan, &CANHeader, timerCanData, &mailbox);
     vTaskDelay(10);
     i++;
@@ -739,22 +755,24 @@ void StartHornTask(void const * argument)
 {
   /* USER CODE BEGIN StartHornTask */
   /* Infinite loop */
-  uint8_t hornNum = 0;
   for(;;)
   {
-    if(isRunning == RUNNING){
-      TickType_t delayAmount = hornSequence_Five[hornNum]+timerStartTick-xTaskGetTickCount();
-      vTaskDelay(delayAmount);
-      setRelay(GPIO_PIN_SET);
-      vTaskDelay(hornLengths_Five[hornNum]);
-      setRelay(GPIO_PIN_RESET);
-      hornNum++;
-      if (hornNum == (sizeof(hornLengths_Five)/4)){
-        isRunning = STOPPED;
+    if(isRunning){
+      if ((hornSequence_Five[hornNum]+timerStartTick) >= xTaskGetTickCount()){
+        TickType_t delayAmount = hornSequence_Five[hornNum]+timerStartTick-xTaskGetTickCount();
+        vTaskDelay(delayAmount);
+        setRelay(GPIO_PIN_SET);
+        vTaskDelay(hornLengths_Five[hornNum]);
+        setRelay(GPIO_PIN_RESET);
+        hornNum++;
+        if (hornNum == (sizeof(hornLengths_Five)/4)){
+          hornNum = 0;
+        }
+      } else {
+        vTaskDelay(20);
       }
     } else{
-      timerStartTick = xTaskGetTickCount();
-      vTaskDelay(10);
+      vTaskDelay(50);
     }
   }
   /* USER CODE END StartHornTask */
@@ -785,7 +803,7 @@ void StartCANReceiveTask(void const * argument)
       HAL_CAN_GetRxMessage(&hcan, CAN_RX_FIFO0, &canHeader, canData);
 
       if (canHeader.StdId == (CAN_REMOTE_ID | CAN_MSG_START)){
-        isRunning = RUNNING;
+        isRunning = !isRunning;
       }
     }
 
