@@ -1,5 +1,6 @@
 #MicroXplorer Configuration settings - do not modify
-ADC.IPParameters=SamplingTime
+ADC.IPParameters=SamplingTime,Resolution
+ADC.Resolution=ADC_RESOLUTION_12B
 ADC.SamplingTime=ADC_SAMPLETIME_239CYCLES_5
 CAD.formats=
 CAD.pinconfig=

@@ -105,13 +105,14 @@ uint8_t currentRelay;
 
 uint32_t adcResults[2];
 
+uint8_t hornMode = HORN_MODE_FIVE_MINUTE;
 static TickType_t hornSequence_Five[4] = {60000, 120000, 300000, 360000};
 static TickType_t hornLengths_Five[4] = {1000, 1000, 1000, 1000};
 static TickType_t sequenceLength_Five = 360000;
 
-static TickType_t hornSequence_Three[1] = {10000};
-static TickType_t hornLengths_Three[1] = {500};
-static TickType_t sequenceLength_Three = 180000;
+static TickType_t hornSequence_Three[5] = {30000, 31250, 32500, 150000, 210000};
+static TickType_t hornLengths_Three[5] = {1000, 1000, 1000, 1500, 1500};
+static TickType_t sequenceLength_Three = 210000;
 static uint8_t hornNum = 0;
 
 TickType_t timerStartTick;
@@ -137,6 +138,7 @@ static void Horn_Init(void);
 static uint16_t CalculatePercentage(uint32_t adcReading);
 static void setRelay(GPIO_PinState state);
 static uint8_t TestRelay(uint16_t relayPin, uint16_t ledPin, uint16_t timeout);
+static void updateHornMode();
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -596,6 +598,7 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 static void Horn_Init(void){
+  updateHornMode();
   relay1Condition = TestRelay(RELAY1_Pin, RELAY1_LED_Pin, 30);
   HAL_Delay(50);
   relay2Condition = TestRelay(RELAY2_Pin, RELAY2_LED_Pin, 30);
@@ -646,6 +649,10 @@ static void setRelay(GPIO_PinState state){
     HAL_GPIO_WritePin(GPIOA, RELAY2_Pin, state);
   }
 }
+
+static void updateHornMode(){
+  hornMode = HAL_GPIO_ReadPin(GPIOA, MODE_SWITCH_Pin);
+}
 /* USER CODE END 4 */
 
 /* USER CODE BEGIN Header_StartDefaultTask */
@@ -686,7 +693,7 @@ void StartDisplayTask(void const * argument)
     vTaskDelay(10);
     uint16_t percentage = CalculatePercentage(adcResults[1]);
     Display_SetValue(&ioexpander, percentage, DISPLAY_MODE_ALL);
-    vTaskDelay(250);
+    vTaskDelay(125);
   }
   isRunning = RUNNING;
   timerStartTick = xTaskGetTickCount();
@@ -708,7 +715,13 @@ void StartDisplayTask(void const * argument)
       timerStartTick = xTaskGetTickCount() - 61000;
       hornNum = 1;
     }
+    if((hornMode == HORN_MODE_THREE_MINUTE) && (sequenceLength_Three+1000+timerStartTick) < xTaskGetTickCount()){
+      isRunning = STOPPED;
+    }
     uint32_t secondsToZero = ((sequenceLength_Five+1000)+timerStartTick-xTaskGetTickCount())/1000;
+    if(hornMode == HORN_MODE_THREE_MINUTE){
+      secondsToZero = ((sequenceLength_Three+1000)+timerStartTick-xTaskGetTickCount())/1000;
+    }
     uint8_t minutes = secondsToZero/60;
     uint8_t seconds = secondsToZero%60;
     //approx 0.15ms
@@ -761,18 +774,17 @@ void StartHornTask(void const * argument)
       if ((hornSequence_Five[hornNum]+timerStartTick) >= xTaskGetTickCount()){
         TickType_t delayAmount = hornSequence_Five[hornNum]+timerStartTick-xTaskGetTickCount();
         vTaskDelay(delayAmount);
-        setRelay(GPIO_PIN_SET);
-        vTaskDelay(hornLengths_Five[hornNum]);
-        setRelay(GPIO_PIN_RESET);
-        hornNum++;
-        if (hornNum == (sizeof(hornLengths_Five)/4)){
-          hornNum = 0;
+          setRelay(GPIO_PIN_SET);
+          vTaskDelay(hornLengths_Five[hornNum]);
+          setRelay(GPIO_PIN_RESET);
+          if (hornNum < ((sizeof(hornLengths_Five)/4)-1)){
+            hornNum++;
         }
       } else {
         vTaskDelay(20);
       }
     } else{
-      vTaskDelay(50);
+      vTaskDelay(500);
     }
   }
   /* USER CODE END StartHornTask */
