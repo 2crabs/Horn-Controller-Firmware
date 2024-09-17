@@ -97,11 +97,16 @@ osStaticMessageQDef_t rgbQueueControlBlock;
 osMessageQId hornSequenceQueueHandle;
 uint8_t hornSequenceQueueBuffer[ 1 * sizeof( uint8_t ) ];
 osStaticMessageQDef_t hornSequenceQueueControlBlock;
+osMessageQId canReceiveQueueHandle;
+uint8_t canReceiveQueueBuffer[ 1 * sizeof( uint8_t ) ];
+osStaticMessageQDef_t canReceiveQueueControlBlock;
 /* USER CODE BEGIN PV */
 TCA6424 ioexpander;
 
 WS2812 rgbLeds;
 static uint8_t rgbBuffer[WS2812_BUF_LEN];
+static uint8_t rgbColorFiveMin[4] = {0, 0, 10, RGB_MODE};
+static uint8_t rgbColorThreeMin[4] = {10, 0, 10, RGB_MODE};
 
 uint8_t relay1Condition;
 uint8_t relay2Condition;
@@ -109,6 +114,8 @@ uint8_t relay2Condition;
 uint8_t currentRelay;
 
 uint32_t adcResults[2];
+
+static uint8_t dummyData = 0;
 
 uint8_t hornMode = HORN_MODE_THREE_MINUTE;
 static TickType_t hornSequence_Five[4] = {60000, 120000, 300000, 360000};
@@ -143,6 +150,7 @@ static uint16_t CalculatePercentage(uint32_t adcReading);
 static void setRelay(GPIO_PinState state);
 static uint8_t TestRelay(uint16_t relayPin, uint16_t ledPin, uint16_t timeout);
 static void updateHornMode();
+static void updateDisplays(uint8_t minutes, uint8_t seconds);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -154,7 +162,8 @@ void HAL_TIM_PWM_PulseFinishedCallback(TIM_HandleTypeDef *htim){
 void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan){
   BaseType_t xHigherPriorityTaskWoken = pdFALSE;
 
-  vTaskNotifyGiveFromISR(CANReceiveTaskHandle, &xHigherPriorityTaskWoken);
+  xQueueSendFromISR(canReceiveQueueHandle, &dummyData,  &xHigherPriorityTaskWoken);
+
   portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 }
 /* USER CODE END 0 */
@@ -228,6 +237,10 @@ int main(void)
   /* definition and creation of hornSequenceQueue */
   osMessageQStaticDef(hornSequenceQueue, 1, uint8_t, hornSequenceQueueBuffer, &hornSequenceQueueControlBlock);
   hornSequenceQueueHandle = osMessageCreate(osMessageQ(hornSequenceQueue), NULL);
+
+  /* definition and creation of canReceiveQueue */
+  osMessageQStaticDef(canReceiveQueue, 1, uint8_t, canReceiveQueueBuffer, &canReceiveQueueControlBlock);
+  canReceiveQueueHandle = osMessageCreate(osMessageQ(canReceiveQueue), NULL);
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
@@ -607,7 +620,6 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 static void Horn_Init(void){
-  updateHornMode();
   relay1Condition = TestRelay(RELAY1_Pin, RELAY1_LED_Pin, 30);
   HAL_Delay(50);
   relay2Condition = TestRelay(RELAY2_Pin, RELAY2_LED_Pin, 30);
@@ -660,7 +672,31 @@ static void setRelay(GPIO_PinState state){
 }
 
 static void updateHornMode(){
-  hornMode = HAL_GPIO_ReadPin(GPIOA, MODE_SWITCH_Pin);
+  if (hornMode != HAL_GPIO_ReadPin(GPIOA, MODE_SWITCH_Pin)){
+    hornMode = HAL_GPIO_ReadPin(GPIOA, MODE_SWITCH_Pin);
+    if (hornMode == HORN_MODE_FIVE_MINUTE){
+      xQueueSendToBack(rgbQueueHandle, &rgbColorFiveMin, 0);
+    } else {
+      xQueueSendToBack(rgbQueueHandle, &rgbColorThreeMin, 0);
+    }
+  }
+}
+
+static void updateDisplays(uint8_t minutes, uint8_t seconds){
+  static uint32_t mailbox;
+  static uint8_t timerCanData[2];
+  static CAN_TxHeaderTypeDef CANHeader;
+  CANHeader.StdId = 0xAA;
+  CANHeader.DLC = 0x02;
+  CANHeader.IDE = CAN_ID_STD;
+  CANHeader.RTR = CAN_RTR_DATA;
+
+  timerCanData[0] = minutes;
+  timerCanData[1] = seconds;
+
+  Display_SetMinSec(&ioexpander, minutes, seconds);
+  HAL_CAN_AddTxMessage(&hcan, &CANHeader, timerCanData, &mailbox);
+
 }
 /* USER CODE END 4 */
 
@@ -703,41 +739,37 @@ void StartDisplayTask(void const * argument)
     Display_SetValue(&ioexpander, percentage, DISPLAY_MODE_ALL);
     vTaskDelay(125);
   }
-  isRunning = RUNNING;
-  timerStartTick = xTaskGetTickCount();
-  xQueueSendToBack(hornSequenceQueueHandle, &hornMode, 10);
-  uint32_t mailbox;
-  static uint8_t timerCanData[2];
-  static CAN_TxHeaderTypeDef CANHeader;
-  CANHeader.StdId = 0xAA;
-  CANHeader.DLC = 0x02;
-  CANHeader.IDE = CAN_ID_STD;
-  CANHeader.RTR = CAN_RTR_DATA;
 
   for(;;)
   {
     if(!isRunning){
-      timerStartTick = xTaskGetTickCount()+1;
+      updateHornMode();
     }
+
+    // 5 minute horn has stopped
     if((sequenceLength_Five+1000+timerStartTick) < xTaskGetTickCount()){
       timerStartTick = xTaskGetTickCount() - 61000;
     }
+
+    //three minute horn has ended
     if((hornMode == HORN_MODE_THREE_MINUTE) && (sequenceLength_Three+1000+timerStartTick) < xTaskGetTickCount()){
       isRunning = STOPPED;
     }
 
 
-    uint32_t secondsToZero = ((sequenceLength_Five+1000)+timerStartTick-xTaskGetTickCount())/1000;
-    if(hornMode == HORN_MODE_THREE_MINUTE){
-      secondsToZero = ((sequenceLength_Three+1000)+timerStartTick-xTaskGetTickCount())/1000;
+    if (!isRunning && (hornMode == HORN_MODE_FIVE_MINUTE)){
+      updateDisplays(6, 0);
+    } else if (!isRunning && (hornMode == HORN_MODE_THREE_MINUTE)){
+      updateDisplays(3, 30);
+    } else {
+      uint16_t secondsToZero = ((sequenceLength_Five+1000)+timerStartTick-xTaskGetTickCount())/1000;
+      if(hornMode == HORN_MODE_THREE_MINUTE){
+        secondsToZero = ((sequenceLength_Three+1000)+timerStartTick-xTaskGetTickCount())/1000;
+      }
+      uint8_t minutes = secondsToZero/60;
+      uint8_t seconds = secondsToZero%60;
+      updateDisplays(minutes, seconds);
     }
-    uint8_t minutes = secondsToZero/60;
-    uint8_t seconds = secondsToZero%60;
-    //approx 0.15ms
-    Display_SetMinSec(&ioexpander, minutes, seconds);
-    timerCanData[0] = minutes;
-    timerCanData[1] = seconds;
-    HAL_CAN_AddTxMessage(&hcan, &CANHeader, timerCanData, &mailbox);
     vTaskDelay(10);
   }
   /* USER CODE END StartDisplayTask */
@@ -805,7 +837,6 @@ void StartHornTask(void const * argument)
         setRelay(GPIO_PIN_RESET);
       }
       xQueueSendToBack(hornSequenceQueueHandle, &rolling, 5);
-      vTaskDelay(1000);
       /* 5 minute horns */
 
     } else if (settings == HORN_MODE_ROLLING){
@@ -819,10 +850,10 @@ void StartHornTask(void const * argument)
         setRelay(GPIO_PIN_RESET);
       }
       xQueueSendToBack(hornSequenceQueueHandle, &rolling, 5);
-      vTaskDelay(1000);
      /* rolling horns */
 
     }
+    vTaskDelay(100);
     setRelay(GPIO_PIN_RESET);
   }
   /* USER CODE END StartHornTask */
@@ -839,6 +870,7 @@ void StartCANReceiveTask(void const * argument)
 {
   /* USER CODE BEGIN StartCANReceiveTask */
   /* Infinite loop */
+  static uint8_t stop = HORN_MODE_STOP;
   static uint8_t red[4] = {10,0,0,RGB_REMOTE};
   static uint8_t green[4] = {0,10,0,RGB_REMOTE};
   static CAN_RxHeaderTypeDef canHeader;
@@ -846,14 +878,20 @@ void StartCANReceiveTask(void const * argument)
 
   for(;;)
   {
-    if (ulTaskNotifyTake(pdTRUE, 500) == pdFALSE){
+    if (xQueueReceive(canReceiveQueueHandle, &dummyData, 500) == pdFALSE){
       xQueueSendToBack(rgbQueueHandle, red, 0);
     } else {
       xQueueSendToBack(rgbQueueHandle, green, 0);
       HAL_CAN_GetRxMessage(&hcan, CAN_RX_FIFO0, &canHeader, canData);
 
       if (canHeader.StdId == (CAN_REMOTE_ID | CAN_MSG_START)){
-        isRunning = !isRunning;
+        if (!isRunning){
+          isRunning = RUNNING;
+          xQueueSendToBack(hornSequenceQueueHandle, &hornMode, 0);
+        } else {
+          isRunning = STOPPED;
+          xQueueSendToBack(hornSequenceQueueHandle, &stop, 0);
+        }
       }
     }
 
