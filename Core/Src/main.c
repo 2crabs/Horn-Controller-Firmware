@@ -36,6 +36,8 @@
 /* USER CODE BEGIN PD */
 #define HORN_MODE_THREE_MINUTE 1
 #define HORN_MODE_FIVE_MINUTE 0
+#define HORN_MODE_ROLLING 0b10
+#define HORN_MODE_STOP 0b11
 
 #define RELAY_OK 0
 #define RELAY_ERR 1
@@ -92,6 +94,9 @@ osStaticThreadDef_t CANReceiveTaskControlBlock;
 osMessageQId rgbQueueHandle;
 uint8_t rgbQueueBuffer[ 4 * 4 ];
 osStaticMessageQDef_t rgbQueueControlBlock;
+osMessageQId hornSequenceQueueHandle;
+uint8_t hornSequenceQueueBuffer[ 1 * sizeof( uint8_t ) ];
+osStaticMessageQDef_t hornSequenceQueueControlBlock;
 /* USER CODE BEGIN PV */
 TCA6424 ioexpander;
 
@@ -105,7 +110,7 @@ uint8_t currentRelay;
 
 uint32_t adcResults[2];
 
-uint8_t hornMode = HORN_MODE_FIVE_MINUTE;
+uint8_t hornMode = HORN_MODE_THREE_MINUTE;
 static TickType_t hornSequence_Five[4] = {60000, 120000, 300000, 360000};
 static TickType_t hornLengths_Five[4] = {1000, 1000, 1000, 1000};
 static TickType_t sequenceLength_Five = 360000;
@@ -113,7 +118,6 @@ static TickType_t sequenceLength_Five = 360000;
 static TickType_t hornSequence_Three[5] = {30000, 31250, 32500, 150000, 210000};
 static TickType_t hornLengths_Three[5] = {1000, 1000, 1000, 1500, 1500};
 static TickType_t sequenceLength_Three = 210000;
-static uint8_t hornNum = 0;
 
 TickType_t timerStartTick;
 uint8_t isRunning = STOPPED;
@@ -221,6 +225,10 @@ int main(void)
   osMessageQStaticDef(rgbQueue, 4, 4, rgbQueueBuffer, &rgbQueueControlBlock);
   rgbQueueHandle = osMessageCreate(osMessageQ(rgbQueue), NULL);
 
+  /* definition and creation of hornSequenceQueue */
+  osMessageQStaticDef(hornSequenceQueue, 1, uint8_t, hornSequenceQueueBuffer, &hornSequenceQueueControlBlock);
+  hornSequenceQueueHandle = osMessageCreate(osMessageQ(hornSequenceQueue), NULL);
+
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
   /* USER CODE END RTOS_QUEUES */
@@ -259,6 +267,7 @@ int main(void)
   while (1)
   {
     /* USER CODE END WHILE */
+
     /* USER CODE BEGIN 3 */
   }
   /* USER CODE END 3 */
@@ -684,7 +693,6 @@ void StartDisplayTask(void const * argument)
 {
   /* USER CODE BEGIN StartDisplayTask */
   /* Infinite loop */
-  static uint8_t i = 0;
   TickType_t taskStartTick = xTaskGetTickCount();
 
   //show voltage for 5 seconds
@@ -697,6 +705,7 @@ void StartDisplayTask(void const * argument)
   }
   isRunning = RUNNING;
   timerStartTick = xTaskGetTickCount();
+  xQueueSendToBack(hornSequenceQueueHandle, &hornMode, 10);
   uint32_t mailbox;
   static uint8_t timerCanData[2];
   static CAN_TxHeaderTypeDef CANHeader;
@@ -708,16 +717,16 @@ void StartDisplayTask(void const * argument)
   for(;;)
   {
     if(!isRunning){
-      timerStartTick = xTaskGetTickCount();
-      hornNum = 0;
+      timerStartTick = xTaskGetTickCount()+1;
     }
     if((sequenceLength_Five+1000+timerStartTick) < xTaskGetTickCount()){
       timerStartTick = xTaskGetTickCount() - 61000;
-      hornNum = 1;
     }
     if((hornMode == HORN_MODE_THREE_MINUTE) && (sequenceLength_Three+1000+timerStartTick) < xTaskGetTickCount()){
       isRunning = STOPPED;
     }
+
+
     uint32_t secondsToZero = ((sequenceLength_Five+1000)+timerStartTick-xTaskGetTickCount())/1000;
     if(hornMode == HORN_MODE_THREE_MINUTE){
       secondsToZero = ((sequenceLength_Three+1000)+timerStartTick-xTaskGetTickCount())/1000;
@@ -730,7 +739,6 @@ void StartDisplayTask(void const * argument)
     timerCanData[1] = seconds;
     HAL_CAN_AddTxMessage(&hcan, &CANHeader, timerCanData, &mailbox);
     vTaskDelay(10);
-    i++;
   }
   /* USER CODE END StartDisplayTask */
 }
@@ -759,7 +767,7 @@ void StartRgbTask(void const * argument)
 
 /* USER CODE BEGIN Header_StartHornTask */
 /**
-* @brief Function implementing the hornTask thread.
+* @brief starts horn sequence when data is added to queue. Will stop the sequence and wait for more data if data is sent while running sequence of horns
 * @param argument: Not used
 * @retval None
 */
@@ -768,24 +776,54 @@ void StartHornTask(void const * argument)
 {
   /* USER CODE BEGIN StartHornTask */
   /* Infinite loop */
+  uint8_t settings;
+  uint8_t rolling = HORN_MODE_ROLLING;
   for(;;)
   {
-    if(isRunning){
-      if ((hornSequence_Five[hornNum]+timerStartTick) >= xTaskGetTickCount()){
-        TickType_t delayAmount = hornSequence_Five[hornNum]+timerStartTick-xTaskGetTickCount();
-        vTaskDelay(delayAmount);
-          setRelay(GPIO_PIN_SET);
-          vTaskDelay(hornLengths_Five[hornNum]);
-          setRelay(GPIO_PIN_RESET);
-          if (hornNum < ((sizeof(hornLengths_Five)/4)-1)){
-            hornNum++;
-        }
-      } else {
-        vTaskDelay(20);
+    xQueueReceive(hornSequenceQueueHandle, &settings, portMAX_DELAY);
+
+    if (settings == HORN_MODE_THREE_MINUTE){
+
+      /* 3 minute horns */
+      for (uint8_t i = 0; i < (sizeof(hornLengths_Three)/4); i++) {
+        TickType_t delayAmount = hornSequence_Three[i]+timerStartTick-xTaskGetTickCount();
+        if (xQueueReceive(hornSequenceQueueHandle, &settings, delayAmount) == pdTRUE) {break;};
+        setRelay(GPIO_PIN_SET);
+        if (xQueueReceive(hornSequenceQueueHandle, &settings, hornLengths_Three[i]) == pdTRUE) {break;}
+        setRelay(GPIO_PIN_RESET);
       }
-    } else{
-      vTaskDelay(500);
+      /* 3 minute horns */
+
+    } else if (settings == HORN_MODE_FIVE_MINUTE){
+
+      /* 5 minute horns */
+      for (uint8_t i = 0; i < (sizeof(hornLengths_Five)/4); i++) {
+        TickType_t delayAmount = hornSequence_Five[i]+timerStartTick-xTaskGetTickCount();
+        if (xQueueReceive(hornSequenceQueueHandle, &settings, delayAmount) == pdTRUE) {break;};
+        setRelay(GPIO_PIN_SET);
+        if (xQueueReceive(hornSequenceQueueHandle, &settings, hornLengths_Five[i]) == pdTRUE) {break;};
+        setRelay(GPIO_PIN_RESET);
+      }
+      xQueueSendToBack(hornSequenceQueueHandle, &rolling, 5);
+      vTaskDelay(1000);
+      /* 5 minute horns */
+
+    } else if (settings == HORN_MODE_ROLLING){
+
+      /* rolling horns */
+      for (uint8_t i = 1; i < (sizeof(hornLengths_Five)/4); i++) {
+        TickType_t delayAmount = hornSequence_Five[i]+timerStartTick-xTaskGetTickCount();
+        if (xQueueReceive(hornSequenceQueueHandle, &settings, delayAmount) == pdTRUE) {break;};
+        setRelay(GPIO_PIN_SET);
+        if (xQueueReceive(hornSequenceQueueHandle, &settings, hornLengths_Five[i]) == pdTRUE) {break;};
+        setRelay(GPIO_PIN_RESET);
+      }
+      xQueueSendToBack(hornSequenceQueueHandle, &rolling, 5);
+      vTaskDelay(1000);
+     /* rolling horns */
+
     }
+    setRelay(GPIO_PIN_RESET);
   }
   /* USER CODE END StartHornTask */
 }
