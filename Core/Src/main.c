@@ -52,9 +52,14 @@
 #define ADC_BAT 1
 
 #define CAN_REMOTE_ID ((0xBB)<<3)
+#define CAN_CONTROLLER_ID ((0xAA)<<3)
 #define CAN_MSG_START 0b010
 #define CAN_MSG_HORN 0b011
 #define CAN_MSG_PERIODIC 0b000
+#define CAN_MSG_TIME 0b001
+#define CAN_MSG_ERROR 0b111
+#define CAN_MSG_BUZZER 0b100
+
 
 #define RUNNING 1
 #define STOPPED 0
@@ -160,6 +165,8 @@ void HAL_TIM_PWM_PulseFinishedCallback(TIM_HandleTypeDef *htim){
 }
 
 void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan){
+  HAL_CAN_DeactivateNotification(hcan, CAN_IT_RX_FIFO0_MSG_PENDING);
+
   BaseType_t xHigherPriorityTaskWoken = pdFALSE;
 
   xQueueSendFromISR(canReceiveQueueHandle, &dummyData,  &xHigherPriorityTaskWoken);
@@ -260,11 +267,11 @@ int main(void)
   rgbTaskHandle = osThreadCreate(osThread(rgbTask), NULL);
 
   /* definition and creation of hornTask */
-  osThreadStaticDef(hornTask, StartHornTask, osPriorityIdle, 0, 64, HornTaskBuffer, &HornTaskControlBlock);
+  osThreadStaticDef(hornTask, StartHornTask, osPriorityAboveNormal, 0, 64, HornTaskBuffer, &HornTaskControlBlock);
   hornTaskHandle = osThreadCreate(osThread(hornTask), NULL);
 
   /* definition and creation of CANReceiveTask */
-  osThreadStaticDef(CANReceiveTask, StartCANReceiveTask, osPriorityIdle, 0, 64, CANReceiveTaskBuffer, &CANReceiveTaskControlBlock);
+  osThreadStaticDef(CANReceiveTask, StartCANReceiveTask, osPriorityHigh, 0, 64, CANReceiveTaskBuffer, &CANReceiveTaskControlBlock);
   CANReceiveTaskHandle = osThreadCreate(osThread(CANReceiveTask), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
@@ -416,7 +423,7 @@ static void MX_CAN_Init(void)
   hcan.Init.TimeSeg1 = CAN_BS1_4TQ;
   hcan.Init.TimeSeg2 = CAN_BS2_3TQ;
   hcan.Init.TimeTriggeredMode = DISABLE;
-  hcan.Init.AutoBusOff = DISABLE;
+  hcan.Init.AutoBusOff = ENABLE;
   hcan.Init.AutoWakeUp = DISABLE;
   hcan.Init.AutoRetransmission = DISABLE;
   hcan.Init.ReceiveFifoLocked = DISABLE;
@@ -426,6 +433,7 @@ static void MX_CAN_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN CAN_Init 2 */
+  HAL_CAN_ActivateNotification(&hcan, CAN_IT_RX_FIFO0_MSG_PENDING);
   if (HAL_CAN_Start(&hcan) != HAL_OK)
   {
     Error_Handler();
@@ -686,7 +694,7 @@ static void updateDisplays(uint8_t minutes, uint8_t seconds){
   static uint32_t mailbox;
   static uint8_t timerCanData[2];
   static CAN_TxHeaderTypeDef CANHeader;
-  CANHeader.StdId = 0xAA;
+  CANHeader.StdId = CAN_CONTROLLER_ID | CAN_MSG_TIME;
   CANHeader.DLC = 0x02;
   CANHeader.IDE = CAN_ID_STD;
   CANHeader.RTR = CAN_RTR_DATA;
@@ -696,7 +704,6 @@ static void updateDisplays(uint8_t minutes, uint8_t seconds){
 
   Display_SetMinSec(&ioexpander, minutes, seconds);
   HAL_CAN_AddTxMessage(&hcan, &CANHeader, timerCanData, &mailbox);
-
 }
 /* USER CODE END 4 */
 
@@ -881,18 +888,25 @@ void StartCANReceiveTask(void const * argument)
     if (xQueueReceive(canReceiveQueueHandle, &dummyData, 500) == pdFALSE){
       xQueueSendToBack(rgbQueueHandle, red, 0);
     } else {
-      xQueueSendToBack(rgbQueueHandle, green, 0);
       HAL_CAN_GetRxMessage(&hcan, CAN_RX_FIFO0, &canHeader, canData);
+      xQueueSendToBack(rgbQueueHandle, green, 0);
 
       if (canHeader.StdId == (CAN_REMOTE_ID | CAN_MSG_START)){
         if (!isRunning){
           isRunning = RUNNING;
+          timerStartTick = xTaskGetTickCount();
           xQueueSendToBack(hornSequenceQueueHandle, &hornMode, 0);
         } else {
           isRunning = STOPPED;
           xQueueSendToBack(hornSequenceQueueHandle, &stop, 0);
         }
       }
+
+      if (canHeader.StdId == (CAN_REMOTE_ID | CAN_MSG_BUZZER)){
+        HAL_GPIO_WritePin(BUZZER_GPIO_Port, BUZZER_Pin, canData[0]);
+      }
+
+      HAL_CAN_ActivateNotification(&hcan, CAN_IT_RX_FIFO0_MSG_PENDING);
     }
 
   }
