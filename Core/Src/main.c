@@ -660,6 +660,7 @@ static uint8_t TestRelay(uint16_t relayPin, uint16_t ledPin, uint16_t timeout){
 
 static uint16_t CalculatePercentage(uint32_t adcReading){
   int32_t percentage = (adcReading*3363)/10000 - 923;
+  percentage = (percentage/5)*5;
   if (percentage<0){
     return 0;
   }
