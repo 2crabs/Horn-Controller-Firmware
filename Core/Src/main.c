@@ -660,15 +660,15 @@ static uint8_t TestRelay(uint16_t relayPin, uint16_t ledPin, uint16_t timeout){
 
 static uint16_t CalculatePercentage(uint32_t adcReading){
   int32_t percentage = (adcReading*3363)/10000 - 923;
-  percentage = (percentage/5)*5;
+  uint8_t result;
   if (percentage<0){
-    return 0;
+    result = 0;
   }
   else if (percentage>100){
-    return 100;
+    result = 100;
   }
-
-  return (uint16_t)percentage;
+  result = (result/5) * 5;
+  return result;
 }
 
 static void setRelay(GPIO_PinState state){
