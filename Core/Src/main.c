@@ -150,10 +150,8 @@ void StartHornTask(void const * argument);
 void StartCANReceiveTask(void const * argument);
 
 /* USER CODE BEGIN PFP */
-static void Horn_Init(void);
 static uint16_t CalculatePercentage(uint32_t adcReading);
 static void setRelay(GPIO_PinState state);
-static uint8_t TestRelay(uint16_t relayPin, uint16_t ledPin, uint16_t timeout);
 static void updateHornMode();
 static void updateDisplays(uint8_t minutes, uint8_t seconds);
 /* USER CODE END PFP */
@@ -218,10 +216,6 @@ int main(void)
 
   TCA6424_Init(&ioexpander, &hi2c1, GPIOB, IO_RST_Pin);
   TCA6424_SetAsOutputs(&ioexpander);
-
-  //Display nothing
-  Display_SetValue(&ioexpander, 1, 0);
-  Horn_Init();
   /* USER CODE END 2 */
 
   /* USER CODE BEGIN RTOS_MUTEX */
@@ -626,38 +620,6 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-static void Horn_Init(void){
-  relay1Condition = TestRelay(RELAY1_Pin, RELAY1_LED_Pin, 30);
-  HAL_Delay(50);
-  relay2Condition = TestRelay(RELAY2_Pin, RELAY2_LED_Pin, 30);
-
-  //only use relay 1 if 2 is not working
-  currentRelay = RELAY_ONE;
-  if (relay2Condition == RELAY_OK){
-    currentRelay = RELAY_TWO;
-  }
-
-  HAL_Delay(40);
-}
-
-static uint8_t TestRelay(uint16_t relayPin, uint16_t ledPin, uint16_t timeout){
-  uint8_t condition = RELAY_ERR;
-  uint32_t startTime = HAL_GetTick();
-
-  HAL_GPIO_WritePin(GPIOA, relayPin, GPIO_PIN_SET);
-  //Wait until time limit has expired or relay has closed
-  while((HAL_GPIO_ReadPin(GPIOA, RELAY_TEST_Pin) == GPIO_PIN_SET) && ((HAL_GetTick()-startTime) < timeout)){
-    //do nothing
-  }
-
-  if (HAL_GPIO_ReadPin(GPIOA, RELAY_TEST_Pin) == GPIO_PIN_RESET){
-    HAL_GPIO_WritePin(GPIOB, ledPin, GPIO_PIN_SET);
-    condition = RELAY_OK;
-  }
-  HAL_GPIO_WritePin(GPIOA, relayPin, GPIO_PIN_RESET);
-  return condition;
-}
-
 static uint16_t CalculatePercentage(uint32_t adcReading){
   int32_t percentage = (adcReading*3363)/10000 - 923;
   uint8_t result;
