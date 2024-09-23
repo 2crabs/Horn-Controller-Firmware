@@ -87,18 +87,12 @@ osStaticThreadDef_t defaultTaskControlBlock;
 osThreadId displayTaskHandle;
 uint32_t displayTaskBuffer[ 64 ];
 osStaticThreadDef_t displayTaskControlBlock;
-osThreadId rgbTaskHandle;
-uint32_t rgbTaskBuffer[ 64 ];
-osStaticThreadDef_t rgbTaskControlBlock;
 osThreadId hornTaskHandle;
 uint32_t HornTaskBuffer[ 64 ];
 osStaticThreadDef_t HornTaskControlBlock;
 osThreadId CANReceiveTaskHandle;
 uint32_t CANReceiveTaskBuffer[ 64 ];
 osStaticThreadDef_t CANReceiveTaskControlBlock;
-osMessageQId rgbQueueHandle;
-uint8_t rgbQueueBuffer[ 4 * 4 ];
-osStaticMessageQDef_t rgbQueueControlBlock;
 osMessageQId hornSequenceQueueHandle;
 uint8_t hornSequenceQueueBuffer[ 1 * sizeof( uint8_t ) ];
 osStaticMessageQDef_t hornSequenceQueueControlBlock;
@@ -110,13 +104,12 @@ TCA6424 ioexpander;
 
 WS2812 rgbLeds;
 static uint8_t rgbBuffer[WS2812_BUF_LEN];
-static uint8_t rgbColorFiveMin[4] = {0, 0, 10, RGB_MODE};
-static uint8_t rgbColorThreeMin[4] = {10, 0, 10, RGB_MODE};
+static uint8_t rgbData[9] = {20,0,0,20,0,0,20,0,0};
 
 uint8_t relay1Condition;
 uint8_t relay2Condition;
 //relay used to power horn(defaults to RELAY_2)
-uint8_t currentRelay;
+uint8_t currentRelay = RELAY_TWO;
 
 uint32_t adcResults[2];
 
@@ -145,7 +138,6 @@ static void MX_I2C1_Init(void);
 static void MX_TIM2_Init(void);
 void StartDefaultTask(void const * argument);
 void StartDisplayTask(void const * argument);
-void StartRgbTask(void const * argument);
 void StartHornTask(void const * argument);
 void StartCANReceiveTask(void const * argument);
 
@@ -154,6 +146,7 @@ static uint16_t CalculatePercentage(uint32_t adcReading);
 static void setRelay(GPIO_PinState state);
 static void updateHornMode();
 static void updateDisplays(uint8_t minutes, uint8_t seconds);
+static void updateRGB();
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -208,14 +201,14 @@ int main(void)
   MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
   WS2812_Reset_Buf(rgbBuffer);
-  WS2812_Write_Buf(rgbBuffer, 10, 10, 0, RGB_BAT);
-  WS2812_Write_Buf(rgbBuffer, 10, 0, 0, RGB_REMOTE);
-  WS2812_Write_Buf(rgbBuffer, 0, 0, 10, RGB_MODE);
   WS2812_Init(&rgbLeds, &htim2, TIM_CHANNEL_2);
   WS2812_Send(&rgbLeds, rgbBuffer);
 
   TCA6424_Init(&ioexpander, &hi2c1, GPIOB, IO_RST_Pin);
   TCA6424_SetAsOutputs(&ioexpander);
+
+  updateHornMode();
+  updateRGB();
   /* USER CODE END 2 */
 
   /* USER CODE BEGIN RTOS_MUTEX */
@@ -231,10 +224,6 @@ int main(void)
   /* USER CODE END RTOS_TIMERS */
 
   /* Create the queue(s) */
-  /* definition and creation of rgbQueue */
-  osMessageQStaticDef(rgbQueue, 4, 4, rgbQueueBuffer, &rgbQueueControlBlock);
-  rgbQueueHandle = osMessageCreate(osMessageQ(rgbQueue), NULL);
-
   /* definition and creation of hornSequenceQueue */
   osMessageQStaticDef(hornSequenceQueue, 1, uint8_t, hornSequenceQueueBuffer, &hornSequenceQueueControlBlock);
   hornSequenceQueueHandle = osMessageCreate(osMessageQ(hornSequenceQueue), NULL);
@@ -255,10 +244,6 @@ int main(void)
   /* definition and creation of displayTask */
   osThreadStaticDef(displayTask, StartDisplayTask, osPriorityNormal, 0, 64, displayTaskBuffer, &displayTaskControlBlock);
   displayTaskHandle = osThreadCreate(osThread(displayTask), NULL);
-
-  /* definition and creation of rgbTask */
-  osThreadStaticDef(rgbTask, StartRgbTask, osPriorityLow, 0, 64, rgbTaskBuffer, &rgbTaskControlBlock);
-  rgbTaskHandle = osThreadCreate(osThread(rgbTask), NULL);
 
   /* definition and creation of hornTask */
   osThreadStaticDef(hornTask, StartHornTask, osPriorityAboveNormal, 0, 64, HornTaskBuffer, &HornTaskControlBlock);
@@ -628,6 +613,8 @@ static uint16_t CalculatePercentage(uint32_t adcReading){
   }
   else if (percentage>100){
     result = 100;
+  } else {
+    result = percentage;
   }
   result = (result/5) * 5;
   return result;
@@ -642,13 +629,15 @@ static void setRelay(GPIO_PinState state){
 }
 
 static void updateHornMode(){
-  if (hornMode != HAL_GPIO_ReadPin(GPIOA, MODE_SWITCH_Pin)){
-    hornMode = HAL_GPIO_ReadPin(GPIOA, MODE_SWITCH_Pin);
-    if (hornMode == HORN_MODE_FIVE_MINUTE){
-      xQueueSendToBack(rgbQueueHandle, &rgbColorFiveMin, 0);
-    } else {
-      xQueueSendToBack(rgbQueueHandle, &rgbColorThreeMin, 0);
-    }
+  hornMode = HAL_GPIO_ReadPin(GPIOA, MODE_SWITCH_Pin);
+  if (hornMode == HORN_MODE_FIVE_MINUTE){
+    rgbData[6] = 0;
+    rgbData[7] = 0;
+    rgbData[8] = 20;
+  } else {
+    rgbData[6] = 0;
+    rgbData[7] = 10;
+    rgbData[8] = 20;
   }
 }
 
@@ -666,6 +655,13 @@ static void updateDisplays(uint8_t minutes, uint8_t seconds){
 
   Display_SetMinSec(&ioexpander, minutes, seconds);
   HAL_CAN_AddTxMessage(&hcan, &CANHeader, timerCanData, &mailbox);
+}
+
+static void updateRGB(){
+  WS2812_Write_Buf(rgbBuffer, rgbData[0], rgbData[1], rgbData[2], RGB_BAT);
+  WS2812_Write_Buf(rgbBuffer, rgbData[3], rgbData[4], rgbData[5], RGB_REMOTE);
+  WS2812_Write_Buf(rgbBuffer, rgbData[6], rgbData[7], rgbData[8], RGB_MODE);
+  WS2812_Send(&rgbLeds, rgbBuffer);
 }
 /* USER CODE END 4 */
 
@@ -701,11 +697,14 @@ void StartDisplayTask(void const * argument)
   TickType_t taskStartTick = xTaskGetTickCount();
 
   //show voltage for 5 seconds
-  while((xTaskGetTickCount() - taskStartTick) < 5000){
+  while((xTaskGetTickCount() - taskStartTick) < 7000){
     HAL_ADC_Start_DMA(&hadc, adcResults, 2);
     vTaskDelay(10);
-    uint16_t percentage = CalculatePercentage(adcResults[1]);
-    updateDisplays(0, percentage);
+    uint8_t percentage = CalculatePercentage(adcResults[1]);
+    rgbData[0] = 20-(percentage/5);
+    rgbData[1] = percentage/5;
+    updateDisplays(percentage/100, percentage%100);
+    updateRGB();
     vTaskDelay(125);
   }
 
@@ -739,31 +738,10 @@ void StartDisplayTask(void const * argument)
       uint8_t seconds = secondsToZero%60;
       updateDisplays(minutes, seconds);
     }
+    updateRGB();
     vTaskDelay(10);
   }
   /* USER CODE END StartDisplayTask */
-}
-
-/* USER CODE BEGIN Header_StartRgbTask */
-/**
-* @brief Function implementing the rgbTask thread.
-* @param argument: Not used
-* @retval None
-*/
-/* USER CODE END Header_StartRgbTask */
-void StartRgbTask(void const * argument)
-{
-  /* USER CODE BEGIN StartRgbTask */
-  static uint8_t receievedData[4];
-  /* Infinite loop */
-  for(;;)
-  {
-    xQueueReceive(rgbQueueHandle, receievedData, portMAX_DELAY);
-    WS2812_Write_Buf(rgbBuffer, receievedData[0], receievedData[1], receievedData[2], receievedData[3]);
-    WS2812_Send(&rgbLeds, rgbBuffer);
-    vTaskDelay(5);
-  }
-  /* USER CODE END StartRgbTask */
 }
 
 /* USER CODE BEGIN Header_StartHornTask */
@@ -846,20 +824,20 @@ void StartCANReceiveTask(void const * argument)
   /* Infinite loop */
   HAL_CAN_ActivateNotification(&hcan, CAN_IT_RX_FIFO0_MSG_PENDING);
   static uint8_t stop = HORN_MODE_STOP;
-  static uint8_t red[4] = {10,0,0,RGB_REMOTE};
-  static uint8_t green[4] = {0,10,0,RGB_REMOTE};
   static CAN_RxHeaderTypeDef canHeader;
   static uint8_t canData[8];
 
   for(;;)
   {
-    if (xQueueReceive(canReceiveQueueHandle, &dummyData, 500) == pdFALSE){
+    if (xQueueReceive(canReceiveQueueHandle, &dummyData, 1000) == pdFALSE){
       isRunning = STOPPED;
-      xQueueSendToBack(rgbQueueHandle, red, 0);
+      rgbData[3] = 20;
+      rgbData[4] = 0;
       xQueueSendToBack(hornSequenceQueueHandle, &stop, 0);
     } else {
       HAL_CAN_GetRxMessage(&hcan, CAN_RX_FIFO0, &canHeader, canData);
-      xQueueSendToBack(rgbQueueHandle, green, 0);
+      rgbData[3] = 0;
+      rgbData[4] = 20;
 
       if (canHeader.StdId == (CAN_REMOTE_ID | CAN_MSG_START)){
         if (!isRunning){
