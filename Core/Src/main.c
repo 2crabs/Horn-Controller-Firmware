@@ -60,6 +60,9 @@
 #define CAN_MSG_ERROR 0b111
 #define CAN_MSG_BUZZER 0b100
 
+#define ERROR_CODE_VOLT 1
+#define ERROR_CODE_CUR 2
+
 
 #define RUNNING 1
 #define STOPPED 0
@@ -93,12 +96,18 @@ osStaticThreadDef_t HornTaskControlBlock;
 osThreadId CANReceiveTaskHandle;
 uint32_t CANReceiveTaskBuffer[ 64 ];
 osStaticThreadDef_t CANReceiveTaskControlBlock;
+osThreadId hornCheckTaskHandle;
+uint32_t hornCheckTaskBuffer[ 64 ];
+osStaticThreadDef_t hornCheckTaskControlBlock;
 osMessageQId hornSequenceQueueHandle;
 uint8_t hornSequenceQueueBuffer[ 1 * sizeof( uint8_t ) ];
 osStaticMessageQDef_t hornSequenceQueueControlBlock;
 osMessageQId canReceiveQueueHandle;
 uint8_t canReceiveQueueBuffer[ 1 * sizeof( uint8_t ) ];
 osStaticMessageQDef_t canReceiveQueueControlBlock;
+osMessageQId hornCheckQueueHandle;
+uint8_t hornCheckQueueBuffer[ 1 * sizeof( uint8_t ) ];
+osStaticMessageQDef_t hornCheckQueueControlBlock;
 /* USER CODE BEGIN PV */
 TCA6424 ioexpander;
 
@@ -140,6 +149,7 @@ void StartDefaultTask(void const * argument);
 void StartDisplayTask(void const * argument);
 void StartHornTask(void const * argument);
 void StartCANReceiveTask(void const * argument);
+void StartHornCheckTask(void const * argument);
 
 /* USER CODE BEGIN PFP */
 static uint16_t CalculatePercentage(uint32_t adcReading);
@@ -147,6 +157,7 @@ static void setRelay(GPIO_PinState state);
 static void updateHornMode();
 static void updateDisplays(uint8_t minutes, uint8_t seconds);
 static void updateRGB();
+static void sendError(uint8_t errorCode);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -232,6 +243,10 @@ int main(void)
   osMessageQStaticDef(canReceiveQueue, 1, uint8_t, canReceiveQueueBuffer, &canReceiveQueueControlBlock);
   canReceiveQueueHandle = osMessageCreate(osMessageQ(canReceiveQueue), NULL);
 
+  /* definition and creation of hornCheckQueue */
+  osMessageQStaticDef(hornCheckQueue, 1, uint8_t, hornCheckQueueBuffer, &hornCheckQueueControlBlock);
+  hornCheckQueueHandle = osMessageCreate(osMessageQ(hornCheckQueue), NULL);
+
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
   /* USER CODE END RTOS_QUEUES */
@@ -250,8 +265,12 @@ int main(void)
   hornTaskHandle = osThreadCreate(osThread(hornTask), NULL);
 
   /* definition and creation of CANReceiveTask */
-  osThreadStaticDef(CANReceiveTask, StartCANReceiveTask, osPriorityHigh, 0, 64, CANReceiveTaskBuffer, &CANReceiveTaskControlBlock);
+  osThreadStaticDef(CANReceiveTask, StartCANReceiveTask, osPriorityRealtime, 0, 64, CANReceiveTaskBuffer, &CANReceiveTaskControlBlock);
   CANReceiveTaskHandle = osThreadCreate(osThread(CANReceiveTask), NULL);
+
+  /* definition and creation of hornCheckTask */
+  osThreadStaticDef(hornCheckTask, StartHornCheckTask, osPriorityHigh, 0, 64, hornCheckTaskBuffer, &hornCheckTaskControlBlock);
+  hornCheckTaskHandle = osThreadCreate(osThread(hornCheckTask), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -626,6 +645,9 @@ static void setRelay(GPIO_PinState state){
   } else {
     HAL_GPIO_WritePin(GPIOA, RELAY2_Pin, state);
   }
+  if (state == GPIO_PIN_SET) {
+    xQueueSendToBack(hornCheckQueueHandle, &dummyData, 0);
+  }
 }
 
 static void updateHornMode(){
@@ -662,6 +684,20 @@ static void updateRGB(){
   WS2812_Write_Buf(rgbBuffer, rgbData[3], rgbData[4], rgbData[5], RGB_REMOTE);
   WS2812_Write_Buf(rgbBuffer, rgbData[6], rgbData[7], rgbData[8], RGB_MODE);
   WS2812_Send(&rgbLeds, rgbBuffer);
+}
+
+static void sendError(uint8_t errorCode){
+  static uint32_t mailbox;
+  static uint8_t sendData;
+  static CAN_TxHeaderTypeDef CANHeader;
+  CANHeader.StdId = CAN_CONTROLLER_ID | CAN_MSG_ERROR;
+  CANHeader.DLC = 0x01;
+  CANHeader.IDE = CAN_ID_STD;
+  CANHeader.RTR = CAN_RTR_DATA;
+
+  sendData = errorCode;
+
+  HAL_CAN_AddTxMessage(&hcan, &CANHeader, &sendData, &mailbox);
 }
 /* USER CODE END 4 */
 
@@ -700,7 +736,7 @@ void StartDisplayTask(void const * argument)
   while((xTaskGetTickCount() - taskStartTick) < 7000){
     HAL_ADC_Start_DMA(&hadc, adcResults, 2);
     vTaskDelay(10);
-    uint8_t percentage = CalculatePercentage(adcResults[1]);
+    uint8_t percentage = CalculatePercentage(adcResults[ADC_BAT]);
     rgbData[0] = 20-(percentage/5);
     rgbData[1] = percentage/5;
     updateDisplays(percentage/100, percentage%100);
@@ -712,6 +748,7 @@ void StartDisplayTask(void const * argument)
   {
     if(!isRunning){
       updateHornMode();
+      timerStartTick = xTaskGetTickCount();
     }
 
     // 5 minute horn has stopped
@@ -859,6 +896,36 @@ void StartCANReceiveTask(void const * argument)
 
   }
   /* USER CODE END StartCANReceiveTask */
+}
+
+/* USER CODE BEGIN Header_StartHornCheckTask */
+/**
+* @brief Function implementing the hornCheckTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartHornCheckTask */
+void StartHornCheckTask(void const * argument)
+{
+  /* USER CODE BEGIN StartHornCheckTask */
+  /* Infinite loop */
+  for(;;)
+  {
+    xQueueReceive(hornCheckQueueHandle, &dummyData, portMAX_DELAY);
+    //wait for relay to close and horn to start
+    vTaskDelay(245);
+    HAL_ADC_Start_DMA(&hadc, adcResults, 2);
+    vTaskDelay(5);
+
+    if (adcResults[ADC_CUR] < 2250) {
+      if (HAL_GPIO_ReadPin(RELAY_TEST_GPIO_Port, RELAY_TEST_Pin) == GPIO_PIN_RESET) {
+        sendError(ERROR_CODE_VOLT);
+      } else {
+        sendError(ERROR_CODE_CUR);
+      }
+    }
+  }
+  /* USER CODE END StartHornCheckTask */
 }
 
 /**
