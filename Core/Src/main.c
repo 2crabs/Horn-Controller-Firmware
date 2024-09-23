@@ -918,7 +918,7 @@ void StartHornCheckTask(void const * argument)
     vTaskDelay(5);
 
     if (adcResults[ADC_CUR] < 2250) {
-      if (HAL_GPIO_ReadPin(RELAY_TEST_GPIO_Port, RELAY_TEST_Pin) == GPIO_PIN_RESET) {
+      if (HAL_GPIO_ReadPin(RELAY_TEST_GPIO_Port, RELAY_TEST_Pin) != GPIO_PIN_RESET) {
         sendError(ERROR_CODE_VOLT);
       } else {
         sendError(ERROR_CODE_CUR);
