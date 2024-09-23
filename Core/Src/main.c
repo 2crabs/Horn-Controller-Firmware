@@ -88,16 +88,16 @@ osThreadId defaultTaskHandle;
 uint32_t defaultTaskBuffer[ 64 ];
 osStaticThreadDef_t defaultTaskControlBlock;
 osThreadId displayTaskHandle;
-uint32_t displayTaskBuffer[ 64 ];
+uint32_t displayTaskBuffer[ 80 ];
 osStaticThreadDef_t displayTaskControlBlock;
 osThreadId hornTaskHandle;
-uint32_t HornTaskBuffer[ 64 ];
+uint32_t HornTaskBuffer[ 80 ];
 osStaticThreadDef_t HornTaskControlBlock;
 osThreadId CANReceiveTaskHandle;
-uint32_t CANReceiveTaskBuffer[ 64 ];
+uint32_t CANReceiveTaskBuffer[ 80 ];
 osStaticThreadDef_t CANReceiveTaskControlBlock;
 osThreadId hornCheckTaskHandle;
-uint32_t hornCheckTaskBuffer[ 64 ];
+uint32_t hornCheckTaskBuffer[ 80 ];
 osStaticThreadDef_t hornCheckTaskControlBlock;
 osMessageQId hornSequenceQueueHandle;
 uint8_t hornSequenceQueueBuffer[ 1 * sizeof( uint8_t ) ];
@@ -112,8 +112,8 @@ osStaticMessageQDef_t hornCheckQueueControlBlock;
 TCA6424 ioexpander;
 
 WS2812 rgbLeds;
-static uint8_t rgbBuffer[WS2812_BUF_LEN];
-static uint8_t rgbData[9] = {20,0,0,20,0,0,20,0,0};
+uint8_t rgbBuffer[WS2812_BUF_LEN];
+uint8_t rgbData[9] = {20,0,0,20,0,0,20,0,0};
 
 uint8_t relay1Condition;
 uint8_t relay2Condition;
@@ -122,16 +122,16 @@ uint8_t currentRelay = RELAY_TWO;
 
 uint32_t adcResults[2];
 
-static uint8_t dummyData = 0;
+uint8_t dummyData = 0;
 
 uint8_t hornMode = HORN_MODE_THREE_MINUTE;
-static TickType_t hornSequence_Five[4] = {60000, 120000, 300000, 360000};
-static TickType_t hornLengths_Five[4] = {2000, 2000, 2000, 2000};
-static TickType_t sequenceLength_Five = 360000;
+const TickType_t hornSequence_Five[4] = {60000, 120000, 300000, 360000};
+const TickType_t hornLengths_Five[4] = {2000, 2000, 2000, 2000};
+const TickType_t sequenceLength_Five = 360000;
 
-static TickType_t hornSequence_Three[5] = {30000, 32500, 35000, 150000, 210000};
-static TickType_t hornLengths_Three[5] = {2000, 2000, 2000, 2000, 2000};
-static TickType_t sequenceLength_Three = 210000;
+const TickType_t hornSequence_Three[5] = {30000, 32500, 35000, 150000, 210000};
+const TickType_t hornLengths_Three[5] = {2000, 2000, 2000, 2000, 2000};
+const TickType_t sequenceLength_Three = 210000;
 
 TickType_t timerStartTick;
 uint8_t isRunning = STOPPED;
@@ -257,19 +257,19 @@ int main(void)
   defaultTaskHandle = osThreadCreate(osThread(defaultTask), NULL);
 
   /* definition and creation of displayTask */
-  osThreadStaticDef(displayTask, StartDisplayTask, osPriorityNormal, 0, 64, displayTaskBuffer, &displayTaskControlBlock);
+  osThreadStaticDef(displayTask, StartDisplayTask, osPriorityNormal, 0, 80, displayTaskBuffer, &displayTaskControlBlock);
   displayTaskHandle = osThreadCreate(osThread(displayTask), NULL);
 
   /* definition and creation of hornTask */
-  osThreadStaticDef(hornTask, StartHornTask, osPriorityAboveNormal, 0, 64, HornTaskBuffer, &HornTaskControlBlock);
+  osThreadStaticDef(hornTask, StartHornTask, osPriorityAboveNormal, 0, 80, HornTaskBuffer, &HornTaskControlBlock);
   hornTaskHandle = osThreadCreate(osThread(hornTask), NULL);
 
   /* definition and creation of CANReceiveTask */
-  osThreadStaticDef(CANReceiveTask, StartCANReceiveTask, osPriorityRealtime, 0, 64, CANReceiveTaskBuffer, &CANReceiveTaskControlBlock);
+  osThreadStaticDef(CANReceiveTask, StartCANReceiveTask, osPriorityRealtime, 0, 80, CANReceiveTaskBuffer, &CANReceiveTaskControlBlock);
   CANReceiveTaskHandle = osThreadCreate(osThread(CANReceiveTask), NULL);
 
   /* definition and creation of hornCheckTask */
-  osThreadStaticDef(hornCheckTask, StartHornCheckTask, osPriorityHigh, 0, 64, hornCheckTaskBuffer, &hornCheckTaskControlBlock);
+  osThreadStaticDef(hornCheckTask, StartHornCheckTask, osPriorityHigh, 0, 80, hornCheckTaskBuffer, &hornCheckTaskControlBlock);
   hornCheckTaskHandle = osThreadCreate(osThread(hornCheckTask), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
