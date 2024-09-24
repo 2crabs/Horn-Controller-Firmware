@@ -5,8 +5,8 @@ HAL_StatusTypeDef Display_SetDigits(TCA6424 *IOExpander, uint8_t digit1, uint8_t
 		return HAL_ERROR;
 	}
 
-	uint8_t digit1Values[10] = DIGIT1_VALUES;
-	uint8_t digit23Values[10] = DIGIT23_VALUES;
+	static uint8_t digit1Values[10] = DIGIT1_VALUES;
+	static uint8_t digit23Values[10] = DIGIT23_VALUES;
 
 	uint8_t ports[3];
 	for(uint32_t i = 0; i<3; i++){

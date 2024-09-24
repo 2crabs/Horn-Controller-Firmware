@@ -169,7 +169,7 @@ void HAL_TIM_PWM_PulseFinishedCallback(TIM_HandleTypeDef *htim){
 void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan){
   HAL_CAN_DeactivateNotification(hcan, CAN_IT_RX_FIFO0_MSG_PENDING);
 
-  BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+  static BaseType_t xHigherPriorityTaskWoken = pdFALSE;
 
   xQueueSendFromISR(canReceiveQueueHandle, &dummyData,  &xHigherPriorityTaskWoken);
 
