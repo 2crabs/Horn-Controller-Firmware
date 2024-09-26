@@ -159,6 +159,7 @@ static void updateHornMode();
 static void updateDisplays(uint8_t minutes, uint8_t seconds);
 static void updateRGB();
 static void sendError(uint8_t errorCode);
+static uint8_t getRelay();
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -653,6 +654,14 @@ static void setRelay(GPIO_PinState state){
   }
 }
 
+static uint8_t getRelay(){
+  if (currentRelay == RELAY_ONE){
+    return HAL_GPIO_ReadPin(GPIOA, RELAY1_Pin);
+  } else {
+    return HAL_GPIO_ReadPin(GPIOA, RELAY2_Pin);
+  }
+}
+
 static void updateHornMode(){
   hornMode = HAL_GPIO_ReadPin(GPIOA, MODE_SWITCH_Pin);
   if (hornMode == HORN_MODE_FIVE_MINUTE){
@@ -917,11 +926,11 @@ void StartHornCheckTask(void const * argument)
   {
     xQueueReceive(hornCheckQueueHandle, &dummyData, portMAX_DELAY);
     //wait for relay to close and horn to start
-    vTaskDelay(245);
+    vTaskDelay(100);
     HAL_ADC_Start_DMA(&hadc, adcResults, 2);
     vTaskDelay(5);
 
-    if (adcResults[ADC_CUR] < 2250) {
+    if ((adcResults[ADC_CUR] < 2250) && (getRelay()== GPIO_PIN_SET)) {
       if (HAL_GPIO_ReadPin(RELAY_TEST_GPIO_Port, RELAY_TEST_Pin) != GPIO_PIN_RESET) {
         sendError(ERROR_CODE_VOLT);
         setRelay(GPIO_PIN_RESET);
