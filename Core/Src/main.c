@@ -667,15 +667,16 @@ static void updateHornMode(){
 
 static void updateDisplays(uint8_t minutes, uint8_t seconds){
   static uint32_t mailbox;
-  static uint8_t timerCanData[2];
+  static uint8_t timerCanData[3];
   static CAN_TxHeaderTypeDef CANHeader;
   CANHeader.StdId = CAN_CONTROLLER_ID | CAN_MSG_TIME;
-  CANHeader.DLC = 0x02;
+  CANHeader.DLC = 0x03;
   CANHeader.IDE = CAN_ID_STD;
   CANHeader.RTR = CAN_RTR_DATA;
 
   timerCanData[0] = minutes;
   timerCanData[1] = seconds;
+  timerCanData[2] = (isRunning << 1) | hornMode;
 
   Display_SetMinSec(&ioexpander, minutes, seconds);
   HAL_CAN_AddTxMessage(&hcan, &CANHeader, timerCanData, &mailbox);
