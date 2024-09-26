@@ -642,8 +642,10 @@ static uint16_t CalculatePercentage(uint32_t adcReading){
 static void setRelay(GPIO_PinState state){
   if (currentRelay == RELAY_ONE){
     HAL_GPIO_WritePin(GPIOA, RELAY1_Pin, state);
+    HAL_GPIO_WritePin(RELAY1_LED_GPIO_Port, RELAY1_LED_Pin, state);
   } else {
     HAL_GPIO_WritePin(GPIOA, RELAY2_Pin, state);
+    HAL_GPIO_WritePin(RELAY2_LED_GPIO_Port, RELAY2_LED_Pin, state);
   }
   if (state == GPIO_PIN_SET) {
     xQueueSendToBack(hornCheckQueueHandle, &dummyData, 0);
@@ -920,6 +922,9 @@ void StartHornCheckTask(void const * argument)
     if (adcResults[ADC_CUR] < 2250) {
       if (HAL_GPIO_ReadPin(RELAY_TEST_GPIO_Port, RELAY_TEST_Pin) != GPIO_PIN_RESET) {
         sendError(ERROR_CODE_VOLT);
+        setRelay(GPIO_PIN_RESET);
+        currentRelay = !currentRelay;
+        setRelay(GPIO_PIN_SET);
       } else {
         sendError(ERROR_CODE_CUR);
       }
