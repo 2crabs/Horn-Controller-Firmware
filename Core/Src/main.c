@@ -125,12 +125,13 @@ uint32_t adcResults[2];
 uint8_t dummyData = 0;
 
 uint8_t hornMode = HORN_MODE_THREE_MINUTE;
+
 const TickType_t hornSequence_Five[4] = {60000, 120000, 300000, 360000};
-const TickType_t hornLengths_Five[4] = {2000, 2000, 2000, 2000};
+const TickType_t hornLengths_Five[4] = {900, 900, 2000, 900};
 const TickType_t sequenceLength_Five = 360000;
 
-const TickType_t hornSequence_Three[5] = {30000, 32500, 35000, 150000, 210000};
-const TickType_t hornLengths_Three[5] = {2000, 2000, 2000, 2000, 2000};
+const TickType_t hornSequence_Three[12] = {20000, 20500, 21000, 21500, 22000, 30000, 31500, 33000, 90000, 91500, 150000, 210000};
+const TickType_t hornLengths_Three[12] = {250, 250, 250, 250, 250, 900, 900, 900, 900, 900, 900, 900};
 const TickType_t sequenceLength_Three = 210000;
 
 TickType_t timerStartTick;
