@@ -806,7 +806,7 @@ void StartHornTask(void const * argument)
   /* USER CODE BEGIN StartHornTask */
   /* Infinite loop */
   static uint8_t settings;
-  static uint8_t sequenceStopped = 0;;
+  static uint8_t sequenceStopped = 0;
   static uint8_t rolling = HORN_MODE_ROLLING;
   for(;;)
   {
@@ -842,11 +842,14 @@ void StartHornTask(void const * argument)
     } else if (settings == HORN_MODE_ROLLING){
 
       /* rolling horns */
+      //wait for timerStartTick to be set
+      if (xQueueReceive(hornSequenceQueueHandle, &settings, 2000) == pdTRUE) {sequenceStopped = 1;};
       for (uint8_t i = 1; i < (sizeof(hornLengths_Five)/4); i++) {
+        if(sequenceStopped) {break;}
         TickType_t delayAmount = hornSequence_Five[i]+timerStartTick-xTaskGetTickCount();
-        if (xQueueReceive(hornSequenceQueueHandle, &settings, delayAmount) == pdTRUE) {sequenceStopped = 1; break;};
+        if (xQueueReceive(hornSequenceQueueHandle, &settings, delayAmount) == pdTRUE) {sequenceStopped = 1; break;}
         setRelay(GPIO_PIN_SET);
-        if (xQueueReceive(hornSequenceQueueHandle, &settings, hornLengths_Five[i]) == pdTRUE) {sequenceStopped = 1; break;};
+        if (xQueueReceive(hornSequenceQueueHandle, &settings, hornLengths_Five[i]) == pdTRUE) {sequenceStopped = 1; break;}
         setRelay(GPIO_PIN_RESET);
       }
       if(!sequenceStopped){
